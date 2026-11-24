@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from cairn.server.models import Fact, Intent, ProjectMeta, ProjectReason
+from cairn.server.models import Fact, Intent, ProjectMeta, ProjectReason, ScopeConfig
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -341,6 +341,21 @@ def project_reason_from_row(row: sqlite3.Row) -> ProjectReason | None:
     )
 
 
+def scope_from_row(row: sqlite3.Row) -> ScopeConfig | None:
+    import json
+
+    try:
+        raw = row["scope_json"]
+    except (KeyError, IndexError):
+        return None
+    if not raw:
+        return None
+    try:
+        return ScopeConfig.model_validate(json.loads(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
     return ProjectMeta(
         id=row["id"],
@@ -348,6 +363,7 @@ def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
         status=row["status"],
         created_at=row["created_at"],
         reason=project_reason_from_row(row),
+        scope=scope_from_row(row),
     )
 
 

@@ -18,6 +18,7 @@ from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.event_publisher import EventPublisher
+from cairn.dispatcher.runtime.scope import Scope
 from cairn.dispatcher.runtime.tools import ToolExecutor
 from cairn.dispatcher.tasks.common import RunRecorder, best_effort_release, cancel_reason
 from cairn.dispatcher.workers.registry import get_driver
@@ -108,14 +109,19 @@ def run_native_explore_task(
         budget = AgentBudget(
             max_wall_seconds=explore_config.timeout,
         )
+        # Scope guard: out-of-scope calls are rejected back to the model,
+        # not executed. No scope configured means unrestricted.
+        scope = Scope.from_config(getattr(project.project, "scope", None))
+        executor = ToolExecutor(
+            container_manager,
+            container_name,
+            command_timeout_seconds=explore_config.timeout,
+            scope_checker=scope.checker() if scope else None,
+        )
         context = AgentContext(
             provider=provider,
             model=model_config.model,
-            executor=ToolExecutor(
-                container_manager,
-                container_name,
-                command_timeout_seconds=explore_config.timeout,
-            ),
+            executor=executor,
             cancellation=cancellation,
             budget=budget,
             hint_fetcher=lambda: client.consume_hint_queue(project_id),

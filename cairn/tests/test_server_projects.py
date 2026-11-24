@@ -106,3 +106,26 @@ def test_project_ids_are_global_not_per_project(client):
     _create(client)
     _create(client, title="second")
     assert [p["id"] for p in client.get("/projects").json()] == ["proj_001", "proj_002"]
+
+
+def test_project_scope_roundtrip(client):
+    body = {"title": "lab", "origin": "s", "goal": "g",
+            "scope": {"domains": ["example.com"], "cidrs": ["10.0.0.0/24"],
+                      "exclude_cidrs": ["10.0.0.1/32"], "notes": "lab only"}}
+    pid = client.post("/projects", json=body).json()["project"]["id"]
+    meta = client.get(f"/projects/{pid}").json()["project"]
+    assert meta["scope"]["domains"] == ["example.com"]
+    assert meta["scope"]["exclude_cidrs"] == ["10.0.0.1/32"]
+
+    # Update scope independently.
+    response = client.put(f"/projects/{pid}/scope", json={"domains": ["other.com"]})
+    assert response.status_code == 200
+    assert response.json()["scope"]["domains"] == ["other.com"]
+    assert client.get(f"/projects/{pid}/scope").json()["domains"] == ["other.com"]
+
+    # Projects without scope get an empty default, not 404.
+    plain = client.post("/projects", json={"title": "p2", "origin": "s", "goal": "g"}).json()["project"]["id"]
+    assert client.get(f"/projects/{plain}/scope").json() == {
+        "domains": [], "cidrs": [], "exclude_domains": [], "exclude_cidrs": [], "notes": ""
+    }
+    assert client.get("/projects/proj_999/scope").status_code == 404

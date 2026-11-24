@@ -52,12 +52,24 @@ class ProjectReason(BaseModel):
     last_heartbeat_at: str
 
 
+class ScopeConfig(BaseModel):
+    """What the agents are allowed to touch during the operation."""
+
+    domains: list[str] = Field(default_factory=list)
+    cidrs: list[str] = Field(default_factory=list)
+    exclude_domains: list[str] = Field(default_factory=list)
+    exclude_cidrs: list[str] = Field(default_factory=list)
+    # Free-form note rendered in the UI (e.g. "lab only, no prod").
+    notes: str = ""
+
+
 class ProjectMeta(BaseModel):
     id: str
     title: str
     status: Literal["active", "stopped", "completed"]
     created_at: str
     reason: ProjectReason | None = None
+    scope: ScopeConfig | None = None
 
 
 class ProjectSummary(ProjectMeta):
@@ -93,6 +105,7 @@ class CreateProjectRequest(BaseModel):
     origin: str
     goal: str
     hints: list[CreateHintInline] | None = None
+    scope: ScopeConfig | None = None
 
     @field_validator("title", "origin", "goal")
     @classmethod

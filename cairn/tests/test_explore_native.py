@@ -263,3 +263,63 @@ def test_native_explore_cancellation(monkeypatch):
     )
     assert status == "cancelled"
     assert client.releases
+
+
+def test_native_explore_enforces_scope(monkeypatch):
+    from cairn.server.models import ScopeConfig
+
+    tool_call = Completion(
+        text=None,
+        tool_calls=[
+            ToolCall(id="c0", name="run_command", arguments=json.dumps({"command": "nmap evil.example.com"}))
+        ],
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+    submit = Completion(
+        text=None,
+        tool_calls=[
+            ToolCall(id="c1", name="submit_result", arguments=json.dumps({"result": {"description": "blocked"}}))
+        ],
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+    containers = FakeContainers()  # no exec should run
+    native = patch_common(monkeypatch)
+    client = FakeClient()
+
+    class RecordingProvider(ScriptedProvider):
+        calls = []
+
+        def complete(self, model, messages, **kwargs):
+            RecordingProvider.calls.append(list(messages))
+            return self.script.pop(0)
+
+    provider = RecordingProvider([tool_call, submit])
+    RecordingProvider.calls = []
+    registry = FakeRegistry(provider, "m")
+
+    project = make_project()
+    project.project.scope = ScopeConfig(domains=["target.example.com"])
+
+    project_id_unused = native.run_native_explore_task(
+        config=SimpleNamespace(
+            runtime=SimpleNamespace(interval=5, healthcheck_timeout=5),
+            tasks=SimpleNamespace(explore=SimpleNamespace(timeout=60, native=True)),
+        ),
+        client=client,
+        container_manager=containers,
+        registry=registry,
+        project=project,
+        intent=make_intent(),
+        worker=make_worker(),
+        cancellation=TaskCancellation(),
+    )
+    assert project_id_unused == "success"
+    # The out-of-scope command never reached the container — only the
+    # healthcheck exec ran.
+    assert len(containers.executed) == 1
+    assert containers.executed[0][-1] == '{"phase":"healthcheck"}'
+    assert not any("nmap" in " ".join(c) for c in containers.executed)
+    tool_message = next(
+        m for m in RecordingProvider.calls[1] if m.get("role") == "tool"
+    )
+    assert tool_message["content"]["error"] == "scope"

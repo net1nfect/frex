@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _db_path: Path | None = None
 
@@ -378,6 +378,15 @@ def _migrate_v6_events(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[6] = _migrate_v6_events
+
+
+def _migrate_v7_scope(conn: sqlite3.Connection) -> None:
+    # Operation scope: what the agents are allowed to touch. Stored on
+    # the project so every tool call can be checked against it.
+    _add_column(conn, "projects", "scope_json", "TEXT")
+
+
+MIGRATIONS[7] = _migrate_v7_scope
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
