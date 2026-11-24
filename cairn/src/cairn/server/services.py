@@ -121,6 +121,50 @@ def validate_goal_not_in_sources(fact_ids: list[str]) -> None:
         raise HTTPException(400, "goal cannot be used in from")
 
 
+def validate_goal_evidence(
+    conn: sqlite3.Connection, project_id: str, goal_evidence: list[str]
+) -> None:
+    """Completing a project must point at proof of access.
+
+    ``require_evidence = 0`` keeps the old behaviour — goal_evidence is
+    optional and only checked when supplied. With it enabled, an empty list
+    is rejected: claiming the goal without citing verified evidence is
+    exactly the claim this schema exists to catch.
+    """
+    row = conn.execute("SELECT require_evidence FROM settings WHERE rowid = 1").fetchone()
+    require_evidence = bool(row["require_evidence"])
+    if not goal_evidence:
+        if require_evidence:
+            raise HTTPException(
+                409, "goal_evidence is required by current settings"
+            )
+        return
+    for fact_id in goal_evidence:
+        fact = conn.execute(
+            "SELECT status FROM facts WHERE id = ? AND project_id = ?",
+            (fact_id, project_id),
+        ).fetchone()
+        if fact is None:
+            raise HTTPException(404, f"Fact {fact_id} not found")
+        if fact["status"] != "verified":
+            raise HTTPException(
+                409, f"Goal evidence fact {fact_id} is {fact['status']}, not verified"
+            )
+        evidence = conn.execute(
+            """
+            SELECT 1 FROM evidence
+            WHERE fact_id = ? AND project_id = ? AND kind IN ('access', 'goal')
+            LIMIT 1
+            """,
+            (fact_id, project_id),
+        ).fetchone()
+        if evidence is None:
+            raise HTTPException(
+                409,
+                f"Goal evidence fact {fact_id} has no access or goal evidence",
+            )
+
+
 def validate_intent_creator_worker(creator: str, worker: str | None) -> None:
     if worker is not None and worker != creator:
         raise HTTPException(400, "worker must be null or equal to creator")

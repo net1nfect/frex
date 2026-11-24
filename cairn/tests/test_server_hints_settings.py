@@ -56,19 +56,36 @@ def test_add_hint_missing_project(client):
 def test_settings_defaults(client):
     response = client.get("/settings")
     assert response.status_code == 200
-    assert response.json() == {"intent_timeout": 15, "reason_timeout": 15}
+    assert response.json() == {
+        "intent_timeout": 15,
+        "reason_timeout": 15,
+        "require_evidence": False,
+        "verify_max_attempts": 3,
+    }
 
 
 def test_settings_update(client):
     response = client.put(
         "/settings",
-        json={"intent_timeout": 30, "reason_timeout": 45},
+        json={
+        "intent_timeout": 30,
+        "reason_timeout": 45,
+        "require_evidence": True,
+        "verify_max_attempts": 5,
+    },
     )
     assert response.status_code == 200
-    assert response.json() == {"intent_timeout": 30, "reason_timeout": 45}
+    assert response.json() == {
+        "intent_timeout": 30,
+        "reason_timeout": 45,
+        "require_evidence": True,
+        "verify_max_attempts": 5,
+    }
     assert client.get("/settings").json() == {
         "intent_timeout": 30,
         "reason_timeout": 45,
+        "require_evidence": True,
+        "verify_max_attempts": 5,
     }
 
 

@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator
 class Settings(BaseModel):
     intent_timeout: int = Field(ge=5)
     reason_timeout: int = Field(ge=5)
+    require_evidence: bool = False
+    verify_max_attempts: int = Field(default=3, ge=1)
 
 
 class Fact(BaseModel):
@@ -193,6 +195,7 @@ class CompleteRequest(BaseModel):
     from_: list[str] = Field(alias="from", min_length=1)
     description: str
     worker: str
+    goal_evidence: list[str] = []
     request_id: str | None = None
 
     model_config = {"populate_by_name": True}

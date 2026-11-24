@@ -307,3 +307,88 @@ def test_verification_idempotent_replay(client, project_id, intent_id, run_id):
     assert retry.json() == first.json()
     detail = client.get(f"/projects/{project_id}/facts/{fact_id}").json()
     assert len(detail["verifications"]) == 1
+
+
+def _setup_goal_evidence(client, project_id, with_evidence=True):
+    """Create a verified fact carrying access evidence, ready to cite."""
+    intent = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "get admin", "creator": "alice"},
+    ).json()
+    run = client.post(
+        f"/projects/{project_id}/runs",
+        json={
+            "task_type": "explore",
+            "worker": "kali-01",
+            "command": "type C:\\flag.txt",
+            "exit_code": 0,
+            "status": "success",
+            "stdout": "flag{...}",
+        },
+    ).json()["id"]
+    fact_id = _conclude(
+        client,
+        project_id,
+        intent["id"],
+        run_id=run,
+        kind="access",
+        description="Administrator shell on dc01",
+    ).json()["fact"]["id"]
+    if with_evidence:
+        assert _verify(client, project_id, fact_id, result="pass").status_code == 201
+    return fact_id
+
+
+def _complete(client, project_id, **overrides):
+    payload = {"from": ["origin"], "description": "done", "worker": "alice"}
+    payload.update(overrides)
+    return client.post(f"/projects/{project_id}/complete", json=payload)
+
+
+def test_complete_with_valid_goal_evidence(client, project_id):
+    fact_id = _setup_goal_evidence(client, project_id)
+    response = _complete(client, project_id, goal_evidence=[fact_id])
+    assert response.status_code == 200
+    assert response.json()["to"] == "goal"
+
+
+def test_complete_rejects_unverified_goal_evidence(client, project_id):
+    fact_id = _setup_goal_evidence(client, project_id, with_evidence=False)
+    response = _complete(client, project_id, goal_evidence=[fact_id])
+    assert response.status_code == 409
+    assert "not verified" in response.json()["detail"]
+
+
+def test_complete_rejects_fact_without_access_evidence(client, project_id, intent_id):
+    # A verified fact whose evidence is not kind=access/goal does not count.
+    run = client.post(
+        f"/projects/{project_id}/runs",
+        json={"task_type": "explore", "worker": "w", "status": "success"},
+    ).json()["id"]
+    fact_id = _conclude(
+        client, project_id, intent_id, run_id=run, kind="observation"
+    ).json()["fact"]["id"]
+    _verify(client, project_id, fact_id, result="pass")
+    response = _complete(client, project_id, goal_evidence=[fact_id])
+    assert response.status_code == 409
+    assert "no access or goal evidence" in response.json()["detail"]
+
+
+def test_complete_rejects_unknown_goal_evidence_fact(client, project_id):
+    response = _complete(client, project_id, goal_evidence=["f999"])
+    assert response.status_code == 404
+
+
+def test_complete_without_goal_evidence_still_works_by_default(client, project_id):
+    # require_evidence defaults to 0 in v0.3: backward compatible.
+    response = _complete(client, project_id)
+    assert response.status_code == 200
+
+
+def test_complete_requires_goal_evidence_when_setting_enabled(client, project_id):
+    client.put("/settings", json={"intent_timeout": 15, "reason_timeout": 15, "require_evidence": True, "verify_max_attempts": 3})
+    response = _complete(client, project_id)
+    assert response.status_code == 409
+    assert "required" in response.json()["detail"]
+    fact_id = _setup_goal_evidence(client, project_id)
+    assert _complete(client, project_id, goal_evidence=[fact_id]).status_code == 200

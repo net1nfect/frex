@@ -45,6 +45,7 @@ from cairn.server.services import (
     release_project_reason_lease,
     utcnow,
     validate_facts_exist,
+    validate_goal_evidence,
     validate_goal_not_in_sources,
 )
 
@@ -236,6 +237,7 @@ def complete_project(project_id: str, body: CompleteRequest):
         expire_reason_leases(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
         validate_goal_not_in_sources(body.from_)
+        validate_goal_evidence(conn, project_id, body.goal_evidence)
 
         def produce() -> Intent:
             now = utcnow()
@@ -280,7 +282,7 @@ def complete_project(project_id: str, body: CompleteRequest):
             scope,
             body.request_id,
             payload,
-            Intent,
+            Intent.model_validate,
             produce,
         )
 
