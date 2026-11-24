@@ -10,7 +10,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-TaskType = Literal["reason", "explore", "bootstrap"]
+TaskType = Literal["reason", "explore", "bootstrap", "verify"]
 WorkerType = Literal["claudecode", "codex", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
 
@@ -141,10 +141,20 @@ class BootstrapTaskConfig(BaseModel):
     conclude_timeout: int = Field(gt=0)
 
 
+class VerifyTaskConfig(BaseModel):
+    timeout: int = Field(default=600, gt=0)
+    # fresh: a clean container from the same image, no project workspace —
+    # slower but the replay cannot be contaminated by earlier tasks.
+    # reuse: the project container — faster, risks state leaking into the
+    # verdict.
+    container: Literal["fresh", "reuse"] = "fresh"
+
+
 class TasksConfig(BaseModel):
     bootstrap: BootstrapTaskConfig
     reason: ReasonTaskConfig
     explore: ExploreTaskConfig
+    verify: VerifyTaskConfig = VerifyTaskConfig()
 
 
 class ContainerConfig(BaseModel):

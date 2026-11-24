@@ -139,6 +139,22 @@ class CairnClient:
             json={"from": from_ids, "description": description, "creator": creator, "worker": None},
         )
 
+    def get_fact(self, project_id: str, fact_id: str) -> dict[str, Any]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/facts/{fact_id}"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def create_verification(
+        self, project_id: str, fact_id: str, payload: dict[str, Any]
+    ) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/facts/{fact_id}/verifications",
+            json=payload,
+        )
+
     def create_run(self, project_id: str, payload: dict[str, Any]) -> ApiResult:
         return self._request_json(
             "POST",

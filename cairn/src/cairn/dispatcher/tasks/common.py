@@ -149,6 +149,9 @@ class RunRecorder:
         self._model = model
         self._intent_id = intent_id
         self._command = command
+        # Run id of the most recent successful record; callers that need to
+        # cite the run (verify -> verification.run_id) read it afterwards.
+        self.last_run_id: str | None = None
 
     def record(self, result: ProcessResult, duration_ms: int, phase: str) -> str | None:
         payload = {
@@ -181,6 +184,7 @@ class RunRecorder:
             candidate = response.data.get("id")
             if isinstance(candidate, str) and candidate:
                 run_id = candidate
+        self.last_run_id = run_id
         LOG.info(
             "recorded run project=%s run_id=%s task_type=%s phase=%s status=%s",
             self._project_id,

@@ -97,6 +97,42 @@ class ContainerManager:
             raise RuntimeError(f"failed to create startup container {name}: {exc}") from exc
         return name
 
+    def create_verify_container(self, project_id: str) -> str:
+        """Fresh container from the same image, no project workspace.
+
+        Evidence replays must not see state left by earlier tasks, so the
+        verify container is ephemeral and removed after the run.
+        """
+        name = f"{self._PREFIX}verify-{uuid.uuid4().hex[:12]}"
+        LOG.info(
+            "creating verify container project=%s container=%s image=%s",
+            project_id,
+            name,
+            self._config.image,
+        )
+        try:
+            self._client.containers.run(
+                self._config.image,
+                ["sleep", "infinity"],
+                detach=True,
+                name=name,
+                network_mode=self._config.network_mode,
+                cap_add=self._config.cap_add or None,
+            )
+        except DockerException as exc:
+            raise RuntimeError(f"failed to create verify container {name}: {exc}") from exc
+        return name
+
+    def remove_container(self, name: str) -> None:
+        container = self._get_container(name)
+        if container is None:
+            return
+        try:
+            container.remove(force=True)
+            LOG.info("removed container container=%s", name)
+        except DockerException as exc:
+            LOG.warning("failed to remove container container=%s error=%s", name, exc)
+
     def inspect_state(self, name: str) -> str | None:
         container = self._get_container(name)
         if container is None:

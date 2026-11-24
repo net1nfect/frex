@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any
 
 from cairn.dispatcher.output_parser import extract_json_object
@@ -168,3 +170,63 @@ def validate_explore_payload(payload: dict[str, Any]) -> tuple[str, str | None]:
     if not isinstance(description, str) or not description.strip():
         raise ValueError("description is required")
     return "fact", description.strip()
+
+
+# --- Evidence replay verification (v0.3) ------------------------------------
+#
+# Verification semantics (plan section 1.3): the evidence row states what the
+# original run produced; the replay must reproduce it. Anything that is not a
+# clean verdict must be inconclusive, never fail: a timeout or a broken
+# container says nothing about whether the fact is true.
+
+VERIFICATION_RESULTS = ("pass", "fail", "inconclusive")
+TIMEOUT_EXIT_CODES = (124, 137)
+
+
+def evaluate_evidence(
+    match_rule: str,
+    *,
+    match_value: str | None,
+    exit_code: int | None,
+    stdout: str,
+    stdout_sha256: str | None,
+    replay_exit_code: int | None,
+) -> tuple[str, str | None]:
+    """Compare a replayed run against the recorded evidence.
+
+    Returns ``(result, observed)`` where result is one of
+    ``VERIFICATION_RESULTS`` and observed is a short excerpt of what the
+    replay actually produced, stored on the verification row.
+    """
+    if match_rule == "exit_code":
+        expected = exit_code
+        observed = replay_exit_code
+        if observed is None:
+            return "inconclusive", None
+        return ("pass" if observed == expected else "fail"), f"exit_code={observed}"
+
+    if match_rule == "exact":
+        if stdout_sha256 is None:
+            return "inconclusive", None
+        observed_hash = hashlib.sha256(
+            stdout.encode("utf-8", errors="replace")
+        ).hexdigest()
+        return ("pass" if observed_hash == stdout_sha256 else "fail"), observed_hash
+
+    if match_rule in ("contains", "regex"):
+        if not match_value:
+            return "inconclusive", None
+        if match_rule == "contains":
+            matched = match_value in stdout
+        else:
+            try:
+                matched = re.search(match_value, stdout) is not None
+            except re.error:
+                # A bad pattern is a configuration problem, not evidence
+                # against the fact.
+                return "inconclusive", "invalid_regex"
+        excerpt = stdout.strip()[:400] or None
+        return ("pass" if matched else "fail"), excerpt
+
+    # manual (and anything unknown): the dispatcher cannot decide.
+    return "inconclusive", None
