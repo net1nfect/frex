@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ HEALTHCHECK_COMMUNICATE_GRACE_SECONDS = 10
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
 GRAPH_SNAPSHOT_ROOT = "/tmp/cairn-prompts"
+MAX_RUN_OUTPUT_BYTES = 2 * 1024 * 1024
 LOG = logging.getLogger(__name__)
 
 
@@ -102,6 +104,142 @@ def run_healthcheck(
             cancellation.attach_process(None)
     duration_ms = int((time.perf_counter() - started) * 1000)
     return HealthcheckRun(result=result, duration_ms=duration_ms)
+
+
+def _truncate_output(text: str) -> str:
+    data = text.encode("utf-8", errors="replace")
+    if len(data) <= MAX_RUN_OUTPUT_BYTES:
+        return text
+    return data[:MAX_RUN_OUTPUT_BYTES].decode("utf-8", errors="ignore")
+
+
+def run_status(result: ProcessResult) -> str:
+    if result.cancelled:
+        return "cancelled"
+    if result.timed_out or result.returncode in (124, 137):
+        return "timeout"
+    if result.returncode == 0:
+        return "success"
+    return "failed"
+
+
+class RunRecorder:
+    """Posts a ``task_runs`` record for every container exec.
+
+    Recording is best effort: a failed POST is logged and the exec result is
+    still returned, because losing an audit row must never lose a task
+    result.
+    """
+
+    def __init__(
+        self,
+        client: CairnClient,
+        project_id: str,
+        task_type: str,
+        worker: WorkerConfig,
+        *,
+        model: str | None = None,
+        intent_id: str | None = None,
+        command: str | None = None,
+    ):
+        self._client = client
+        self._project_id = project_id
+        self._task_type = task_type
+        self._worker_name = worker.name
+        self._model = model
+        self._intent_id = intent_id
+        self._command = command
+
+    def record(self, result: ProcessResult, duration_ms: int, phase: str) -> str | None:
+        payload = {
+            "task_type": self._task_type,
+            "worker": self._worker_name,
+            "model": self._model,
+            "phase": phase,
+            "intent_id": self._intent_id,
+            "command": self._command,
+            "exit_code": result.returncode,
+            "timed_out": result.timed_out,
+            "cancelled": result.cancelled,
+            "duration_ms": duration_ms,
+            "status": run_status(result),
+            "stdout": _truncate_output(result.stdout) if result.stdout else None,
+            "stderr": _truncate_output(result.stderr) if result.stderr else None,
+        }
+        response = self._client.create_run(self._project_id, payload)
+        if not response.ok:
+            LOG.warning(
+                "run record failed project=%s task_type=%s phase=%s status=%s",
+                self._project_id,
+                self._task_type,
+                phase,
+                response.status_code,
+            )
+            return None
+        run_id = None
+        if isinstance(response.data, dict):
+            candidate = response.data.get("id")
+            if isinstance(candidate, str) and candidate:
+                run_id = candidate
+        LOG.info(
+            "recorded run project=%s run_id=%s task_type=%s phase=%s status=%s",
+            self._project_id,
+            run_id,
+            self._task_type,
+            phase,
+            payload["status"],
+        )
+        return run_id
+
+    def run_worker_process(
+        self,
+        container_manager: ContainerManager,
+        container_name: str,
+        worker: WorkerConfig,
+        argv: list[str],
+        *,
+        phase: str,
+        timeout_seconds: int,
+        lease: HeartbeatLease | None = None,
+        cancellation: TaskCancellation | None = None,
+    ) -> ProcessResult:
+        started = time.perf_counter()
+        result = run_worker_process(
+            container_manager,
+            container_name,
+            worker,
+            argv,
+            phase=phase,
+            timeout_seconds=timeout_seconds,
+            lease=lease,
+            cancellation=cancellation,
+        )
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        self.record(result, duration_ms, phase)
+        return result
+
+    def run_healthcheck(
+        self,
+        container_manager: ContainerManager,
+        container_name: str,
+        worker: WorkerConfig,
+        command: list[str],
+        *,
+        timeout_seconds: int,
+        lease: HeartbeatLease | None = None,
+        cancellation: TaskCancellation | None = None,
+    ) -> HealthcheckRun:
+        run = run_healthcheck(
+            container_manager,
+            container_name,
+            worker,
+            command,
+            timeout_seconds=timeout_seconds,
+            lease=lease,
+            cancellation=cancellation,
+        )
+        self.record(run.result, run.duration_ms, "healthcheck")
+        return run
 
 
 def run_worker_process(
