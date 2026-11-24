@@ -175,6 +175,13 @@ backup is still cheap insurance:
 cp ~/.local/share/cairn/cairn.db ~/.local/share/cairn/cairn.db.bak
 ```
 
+### Trusting agent claims
+
+Facts are hypotheses until something verifies them. The dispatcher can
+replay evidence in a fresh container and flip statuses automatically —
+see `docs/dev/evidence-verify.md`. Schema v4 migrates automatically on
+server start.
+
 ### Manual
  
 Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then:
