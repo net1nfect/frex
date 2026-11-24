@@ -205,6 +205,31 @@ class WorkerConfig(BaseModel):
         return self
 
 
+class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    type: Literal["openai_compat"]
+    base_url: str = ""
+    api_key: str | None = None
+
+    @model_validator(mode="after")
+    def validate_base_url(self) -> "ProviderConfig":
+        if self.type == "openai_compat" and not self.base_url:
+            raise ValueError(f"provider {self.name} requires base_url")
+        return self
+
+
+class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    provider: str
+    model: str  # provider-native model id
+    max_tokens: int = Field(default=4096, gt=0)
+    temperature: float = Field(default=0.4, ge=0, le=2)
+
+
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -214,6 +239,36 @@ class DispatchConfig(BaseModel):
     container: ContainerConfig
     common_env: dict[str, str] = Field(default_factory=dict)
     workers: list[WorkerConfig]
+    # Provider layer (v0.3): entirely optional. A config with only
+    # workers keeps the pre-provider behaviour; adding models/routing
+    # switches task types to native model calls.
+    providers: list[ProviderConfig] = Field(default_factory=list)
+    models: list[ModelConfig] = Field(default_factory=list)
+    routing: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_provider_layer(self) -> "DispatchConfig":
+        provider_names = [p.name for p in self.providers]
+        if len(set(provider_names)) != len(provider_names):
+            raise ValueError("provider names must be unique")
+        model_names = [m.name for m in self.models]
+        if len(set(model_names)) != len(model_names):
+            raise ValueError("model names must be unique")
+        for model in self.models:
+            if model.provider not in provider_names:
+                raise ValueError(
+                    f"model {model.name} references unknown provider {model.provider}"
+                )
+        known = set(model_names)
+        for task_type, chain in self.routing.items():
+            if not chain:
+                raise ValueError(f"routing[{task_type}] must not be empty")
+            unknown = [m for m in chain if m not in known]
+            if unknown:
+                raise ValueError(
+                    f"routing[{task_type}] references unknown models: {', '.join(unknown)}"
+                )
+        return self
 
     @model_validator(mode="before")
     @classmethod
