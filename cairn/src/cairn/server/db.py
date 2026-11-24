@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _db_path: Path | None = None
 
@@ -131,6 +131,54 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_project
     ON task_runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_runs_intent
     ON task_runs(project_id, intent_id);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    fact_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    command TEXT,
+    exit_code INTEGER,
+    match_rule TEXT NOT NULL DEFAULT 'contains',
+    match_value TEXT,
+    stdout_sha256 TEXT,
+    artifact_path TEXT,
+    excerpt TEXT,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (id, project_id),
+    FOREIGN KEY (fact_id, project_id)
+        REFERENCES facts(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id, project_id)
+        REFERENCES task_runs(id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_fact
+    ON evidence(project_id, fact_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_run
+    ON evidence(project_id, run_id);
+
+CREATE TABLE IF NOT EXISTS fact_verifications (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    fact_id TEXT NOT NULL,
+    run_id TEXT,
+    method TEXT NOT NULL,
+    result TEXT NOT NULL,
+    verifier_model TEXT,
+    expected TEXT,
+    observed TEXT,
+    details TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (id, project_id),
+    FOREIGN KEY (fact_id, project_id)
+        REFERENCES facts(id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id, project_id)
+        REFERENCES task_runs(id, project_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_verifications_fact
+    ON fact_verifications(project_id, fact_id, created_at);
 """
 
 
@@ -204,6 +252,81 @@ def _migrate_v3_create_task_runs(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[3] = _migrate_v3_create_task_runs
+
+
+def _migrate_v4_facts_evidence(conn: sqlite3.Connection) -> None:
+    # Facts v2: every fact carries a kind, a verification status, and a
+    # confidence; new facts start as hypotheses until something verifies
+    # them. Existing rows fall back to observation/hypothesis.
+    for column, ddl in (
+        ("kind", "TEXT NOT NULL DEFAULT 'observation'"),
+        ("status", "TEXT NOT NULL DEFAULT 'hypothesis'"),
+        ("confidence", "REAL NOT NULL DEFAULT 0.5"),
+        ("subject_json", "TEXT"),
+        ("supersedes", "TEXT"),
+        ("created_by_run", "TEXT"),
+        ("created_at", "TEXT"),
+    ):
+        _add_column(conn, "facts", column, ddl)
+    _add_column(conn, "settings", "require_evidence", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "settings", "verify_max_attempts", "INTEGER NOT NULL DEFAULT 3")
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_facts_project_status
+            ON facts(project_id, status);
+
+        CREATE TABLE IF NOT EXISTS evidence (
+            id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            fact_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            command TEXT,
+            exit_code INTEGER,
+            match_rule TEXT NOT NULL DEFAULT 'contains',
+            match_value TEXT,
+            stdout_sha256 TEXT,
+            artifact_path TEXT,
+            excerpt TEXT,
+            captured_at TEXT NOT NULL,
+            PRIMARY KEY (id, project_id),
+            FOREIGN KEY (fact_id, project_id)
+                REFERENCES facts(id, project_id) ON DELETE CASCADE,
+            FOREIGN KEY (run_id, project_id)
+                REFERENCES task_runs(id, project_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_evidence_fact
+            ON evidence(project_id, fact_id);
+        CREATE INDEX IF NOT EXISTS idx_evidence_run
+            ON evidence(project_id, run_id);
+
+        CREATE TABLE IF NOT EXISTS fact_verifications (
+            id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            fact_id TEXT NOT NULL,
+            run_id TEXT,
+            method TEXT NOT NULL,
+            result TEXT NOT NULL,
+            verifier_model TEXT,
+            expected TEXT,
+            observed TEXT,
+            details TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (id, project_id),
+            FOREIGN KEY (fact_id, project_id)
+                REFERENCES facts(id, project_id) ON DELETE CASCADE,
+            FOREIGN KEY (run_id, project_id)
+                REFERENCES task_runs(id, project_id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_verifications_fact
+            ON fact_verifications(project_id, fact_id, created_at);
+        """
+    )
+
+
+MIGRATIONS[4] = _migrate_v4_facts_evidence
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

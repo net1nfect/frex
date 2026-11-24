@@ -41,29 +41,29 @@ def test_configure_is_idempotent_after_reset(tmp_path):
 
 def test_migration_runner_applies_once(tmp_path, monkeypatch):
     calls: list[int] = []
+    next_version = db.SCHEMA_VERSION + 1
 
-    def migrate_to_four(conn):
-        calls.append(4)
+    def migrate_probe(conn):
+        calls.append(next_version)
         conn.execute("CREATE TABLE IF NOT EXISTS migration_probe (id INTEGER)")
 
     db.reset_for_tests()
     db.configure(tmp_path / "cairn.db")
     try:
-        monkeypatch.setattr(db, "SCHEMA_VERSION", 4)
-        monkeypatch.setitem(db.MIGRATIONS, 4, migrate_to_four)
+        monkeypatch.setattr(db, "SCHEMA_VERSION", next_version)
+        monkeypatch.setitem(db.MIGRATIONS, next_version, migrate_probe)
         with db.get_conn() as conn:
             db._migrate(conn)
-            assert _version(conn) == 4
+            assert _version(conn) == next_version
             assert conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_probe'"
             ).fetchone() is not None
         with db.get_conn() as conn:
             db._migrate(conn)
-            assert _version(conn) == 4
-        assert calls == [4]
+            assert _version(conn) == next_version
+        assert calls == [next_version]
     finally:
         db.reset_for_tests()
-
 
 def test_add_column_is_idempotent(tmp_path):
     db.reset_for_tests()
@@ -79,6 +79,9 @@ def test_add_column_is_idempotent(tmp_path):
 
 
 def test_migration_rolls_back_with_the_transaction(tmp_path, monkeypatch):
+    current_version = db.SCHEMA_VERSION
+    next_version = current_version + 1
+
     def broken_migration(conn):
         conn.execute("CREATE TABLE migration_broken (id INTEGER)")
         raise RuntimeError("boom")
@@ -86,13 +89,13 @@ def test_migration_rolls_back_with_the_transaction(tmp_path, monkeypatch):
     db.reset_for_tests()
     db.configure(tmp_path / "cairn.db")
     try:
-        monkeypatch.setattr(db, "SCHEMA_VERSION", 4)
-        monkeypatch.setitem(db.MIGRATIONS, 4, broken_migration)
+        monkeypatch.setattr(db, "SCHEMA_VERSION", next_version)
+        monkeypatch.setitem(db.MIGRATIONS, next_version, broken_migration)
         with pytest.raises(RuntimeError):
             with db.get_conn() as conn:
                 db._migrate(conn)
         with db.get_conn() as conn:
-            assert _version(conn) == 3
+            assert _version(conn) == current_version
             assert conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_broken'"
             ).fetchone() is None
