@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import pytest
+
+from cairn.server import db
+
+
+@pytest.fixture
+def project_id(client):
+    response = client.post(
+        "/projects",
+        json={"title": "lab", "origin": "start", "goal": "finish"},
+    )
+    assert response.status_code == 201
+    return response.json()["project"]["id"]
+
+
+def _create_intent(client, project_id, **overrides):
+    payload = {
+        "from": ["origin"],
+        "description": "scan the host",
+        "creator": "alice",
+        "worker": None,
+    }
+    payload.update(overrides)
+    return client.post(f"/projects/{project_id}/intents", json=payload)
+
+
+def _age_heartbeat(project_id: str, intent_id: str, seconds: int = 3600) -> None:
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE intents SET last_heartbeat_at = datetime('now', ?) WHERE project_id = ? AND id = ?",
+            (f"-{seconds} seconds", project_id, intent_id),
+        )
+
+
+def test_create_unclaimed_intent(client, project_id):
+    response = _create_intent(client, project_id)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] == "i001"
+    assert body["from"] == ["origin"]
+    assert body["to"] is None
+    assert body["worker"] is None
+    assert body["last_heartbeat_at"] is None
+    assert body["concluded_at"] is None
+
+
+def test_create_intent_can_be_claimed_by_creator(client, project_id):
+    response = _create_intent(client, project_id, worker="alice")
+    assert response.status_code == 201
+    assert response.json()["worker"] == "alice"
+    assert response.json()["last_heartbeat_at"] is not None
+
+
+def test_create_intent_rejects_foreign_worker(client, project_id):
+    response = _create_intent(client, project_id, worker="bob")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "worker must be null or equal to creator"
+
+
+def test_create_intent_rejects_goal_source(client, project_id):
+    response = _create_intent(client, project_id, **{"from": ["goal"]})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "goal cannot be used in from"
+
+
+def test_create_intent_rejects_unknown_fact(client, project_id):
+    response = _create_intent(client, project_id, **{"from": ["f999"]})
+    assert response.status_code == 404
+
+
+def test_create_intent_requires_source(client, project_id):
+    response = _create_intent(client, project_id, **{"from": []})
+    assert response.status_code == 422
+
+
+def test_create_intent_on_stopped_project(client, project_id):
+    client.put(f"/projects/{project_id}/status", json={"status": "stopped"})
+    response = _create_intent(client, project_id)
+    assert response.status_code == 403
+
+
+def test_heartbeat_claims_unclaimed_intent(client, project_id):
+    intent = _create_intent(client, project_id).json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/heartbeat",
+        json={"worker": "bob"},
+    )
+    assert response.status_code == 200
+    assert response.json()["worker"] == "bob"
+
+
+def test_heartbeat_conflict_when_claimed_by_other(client, project_id):
+    intent = _create_intent(client, project_id, worker="alice").json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/heartbeat",
+        json={"worker": "bob"},
+    )
+    assert response.status_code == 409
+    assert "alice" in response.json()["detail"]
+
+
+def test_heartbeat_succeeds_after_lease_expiry(client, project_id):
+    intent = _create_intent(client, project_id, worker="alice").json()
+    _age_heartbeat(project_id, intent["id"])
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/heartbeat",
+        json={"worker": "bob"},
+    )
+    assert response.status_code == 200
+    assert response.json()["worker"] == "bob"
+
+
+def test_release_clears_worker(client, project_id):
+    intent = _create_intent(client, project_id, worker="alice").json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/release",
+        json={"worker": "alice"},
+    )
+    assert response.status_code == 200
+    assert response.json()["worker"] is None
+
+
+def test_release_rejects_other_worker(client, project_id):
+    intent = _create_intent(client, project_id, worker="alice").json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/release",
+        json={"worker": "bob"},
+    )
+    assert response.status_code == 409
+
+
+def test_conclude_creates_fact_and_closes_intent(client, project_id):
+    intent = _create_intent(client, project_id).json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/conclude",
+        json={"worker": "alice", "description": "port 22 is open"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fact"]["id"] == "f001"
+    assert body["fact"]["description"] == "port 22 is open"
+    assert body["intent"]["to"] == "f001"
+    assert body["intent"]["concluded_at"] is not None
+
+    detail = client.get(f"/projects/{project_id}").json()
+    assert "f001" in {fact["id"] for fact in detail["facts"]}
+
+
+def test_conclude_twice_returns_409(client, project_id):
+    intent = _create_intent(client, project_id).json()
+    first = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/conclude",
+        json={"worker": "alice", "description": "first"},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/conclude",
+        json={"worker": "alice", "description": "second"},
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Intent already concluded"
+
+
+def test_conclude_rejects_other_worker(client, project_id):
+    intent = _create_intent(client, project_id, worker="alice").json()
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent['id']}/conclude",
+        json={"worker": "bob", "description": "stolen"},
+    )
+    assert response.status_code == 409
+
+
+def test_conclude_unknown_intent(client, project_id):
+    response = client.post(
+        f"/projects/{project_id}/intents/i999/conclude",
+        json={"worker": "alice", "description": "x"},
+    )
+    assert response.status_code == 404
+
+
+def test_list_shows_unclaimed_intent_count(client, project_id):
+    _create_intent(client, project_id)
+    summary = client.get("/projects").json()[0]
+    assert summary["intent_count"] == 1
+    assert summary["unclaimed_intent_count"] == 1
+    assert summary["working_intent_count"] == 0
