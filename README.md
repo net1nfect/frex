@@ -179,7 +179,7 @@ cp ~/.local/share/cairn/cairn.db ~/.local/share/cairn/cairn.db.bak
 
 Facts are hypotheses until something verifies them. The dispatcher can
 replay evidence in a fresh container and flip statuses automatically —
-see `docs/dev/evidence-verify.md`. Schema v4 migrates automatically on
+see `docs/dev/evidence-verify.md · docs/dev/native-runtime.md`. Schema v4 migrates automatically on
 server start.
 
 ### Manual
