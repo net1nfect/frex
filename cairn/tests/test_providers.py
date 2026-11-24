@@ -192,3 +192,61 @@ def test_health_cache_invalidation(provider_server):
     assert "fast" not in registry._health
     registry.invalidate_health()
     assert registry._health == {}
+
+
+def test_openai_compat_streaming_stitches_tool_call_deltas(monkeypatch):
+    sse_lines = [
+        'data: {"choices":[{"delta":{"role":"assistant","content":"scanning"}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"run_command","arguments":"{\\"co"}}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mmand\\":\\"ls\\"}"}}]}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}',
+        "data: [DONE]",
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        def iter_lines(self, decode_unicode=True):
+            yield from sse_lines
+
+        @property
+        def text(self):
+            return ""
+
+    import requests as requests_module
+
+    def fake_post(*a, **k):
+        assert k["json"]["stream"] is True
+        return FakeResponse()
+
+    monkeypatch.setattr(requests_module, "post", fake_post)
+    provider = OpenAICompatProvider("local", "http://x")
+    tokens = []
+    completion = provider.complete(
+        "m",
+        [{"role": "user", "content": "go"}],
+        stream=True,
+        on_token=tokens.append,
+    )
+    assert tokens == ["scanning"]
+    assert len(completion.tool_calls) == 1
+    call = completion.tool_calls[0]
+    assert call.id == "c1"
+    assert call.name == "run_command"
+    assert json.loads(call.arguments) == {"command": "ls"}
+    assert completion.finish_reason == "tool_calls"
+    assert completion.usage.tokens_in == 9
+    assert completion.usage.tokens_out == 4
+
+
+def test_openai_compat_streaming_error_raises(monkeypatch):
+    import requests as requests_module
+
+    class BadResponse:
+        status_code = 503
+        text = "overloaded"
+
+    monkeypatch.setattr(requests_module, "post", lambda *a, **k: BadResponse())
+    provider = OpenAICompatProvider("local", "http://x")
+    with pytest.raises(ProviderError, match="503"):
+        provider.complete("m", [{"role": "user", "content": "x"}], stream=True)

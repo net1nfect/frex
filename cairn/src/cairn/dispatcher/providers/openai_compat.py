@@ -77,12 +77,18 @@ class OpenAICompatProvider:
         *,
         tools: list[dict[str, Any]] | None = None,
         timeout_seconds: int = 120,
+        stream: bool = False,
+        on_token=None,
     ) -> Completion:
         payload: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             payload["tools"] = [
                 {"type": "function", "function": tool} for tool in tools
             ]
+        if stream:
+            return self._complete_streaming(
+                model, payload, timeout_seconds, on_token
+            )
         url = f"{self.base_url}/chat/completions"
         last_error: ProviderError | None = None
         for attempt in range(self.max_retries + 1):
@@ -111,6 +117,100 @@ class OpenAICompatProvider:
                 raise last_error
             time.sleep(self.retry_backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover - loop always raises or returns
+
+    def _complete_streaming(
+        self,
+        model: str,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+        on_token,
+    ) -> Completion:
+        """SSE variant: same wire format, chunked deltas.
+
+        Tool calls arrive as index-keyed argument deltas that must be
+        stitched back together; text deltas go to on_token so the event
+        stream can show the model thinking in realtime.
+        """
+        import json as _json
+
+        payload = {**payload, "stream": True}
+        url = f"{self.base_url}/chat/completions"
+        started = time.perf_counter()
+        response = requests.post(
+            url,
+            json=payload,
+            headers=self._headers(),
+            timeout=timeout_seconds,
+            stream=True,
+        )
+        if response.status_code != 200:
+            raise ProviderError(
+                f"provider {self.name} returned {response.status_code}: {response.text[:200]}",
+                status_code=response.status_code,
+                retriable=response.status_code in RETRIABLE_STATUS,
+            )
+
+        text_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        usage = Usage()
+        finish_reason = None
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data = line[len("data: "):]
+            if data.strip() == "[DONE]":
+                break
+            try:
+                chunk = _json.loads(data)
+            except ValueError:
+                continue
+            chunk_usage = chunk.get("usage")
+            if chunk_usage:
+                usage = Usage(
+                    tokens_in=int(chunk_usage.get("prompt_tokens") or 0),
+                    tokens_out=int(chunk_usage.get("completion_tokens") or 0),
+                )
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                text_parts.append(content)
+                if on_token is not None:
+                    on_token(content)
+            for raw in delta.get("tool_calls") or []:
+                index = raw.get("index", 0)
+                slot = tool_calls.setdefault(
+                    index, {"id": "", "name": "", "arguments": ""}
+                )
+                if raw.get("id"):
+                    slot["id"] = raw["id"]
+                function = raw.get("function") or {}
+                if function.get("name"):
+                    slot["name"] = function["name"]
+                if function.get("arguments"):
+                    slot["arguments"] += function["arguments"]
+
+        parsed_calls = [
+            ToolCall(
+                id=slot["id"] or slot["name"] or f"call{i}",
+                name=slot["name"],
+                arguments=slot["arguments"] or "{}",
+            )
+            for i, slot in sorted(tool_calls.items())
+        ]
+        text = "".join(text_parts) if text_parts else None
+        return Completion(
+            text=text,
+            tool_calls=parsed_calls,
+            usage=usage,
+            finish_reason=finish_reason,
+            model=model,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     def healthcheck(self, model: str) -> bool:
         """A model is healthy if a one-token completion round-trips."""
