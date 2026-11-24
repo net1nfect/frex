@@ -616,6 +616,62 @@
         </button>
         <button @click="sideTab = 'log'" class="flex-1 px-3 py-2.5 text-xs font-medium transition"
           :class="sideTab === 'log' ? 'text-brand-600 border-b-2 border-brand-500' : 'text-slate-400 hover:text-slate-600'">Log</button>
+        <button @click="sideTab = 'ops'" class="flex-1 px-3 py-2.5 text-xs font-medium transition"
+          :class="sideTab === 'ops' ? 'text-brand-600 border-b-2 border-brand-500' : 'text-slate-400 hover:text-slate-600'">Ops</button>
+      </div>
+
+      <!-- Ops: approvals, budget, kill switch -->
+      <div x-show="sideTab === 'ops'" class="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/40">
+        <!-- Pending approvals -->
+        <div class="rounded-2xl border border-amber-200 bg-amber-50/60 p-3">
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-amber-700 mb-2">Awaiting approval</p>
+          <template x-for="intent in (project.intents || []).filter(i => ['high','critical'].includes(i.risk_class) && !i.approved_at && !i.concluded_at)" :key="intent.id">
+            <div class="bg-white rounded-xl border border-amber-200 p-2.5 mb-2 space-y-2">
+              <p class="text-xs text-slate-700 break-words" x-text="intent.description"></p>
+              <div class="flex items-center gap-1.5">
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold"
+                  :class="intent.risk_class === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'"
+                  x-text="intent.risk_class"></span>
+                <div class="flex-1"></div>
+                <button @click="approveIntent(intent.id, true)"
+                  class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[11px] hover:bg-emerald-700 transition">Approve</button>
+                <button @click="approveIntent(intent.id, false)"
+                  class="px-2 py-1 rounded-lg border border-red-200 text-red-600 text-[11px] hover:bg-red-50 transition">Reject</button>
+              </div>
+            </div>
+          </template>
+          <p class="text-xs text-slate-400"
+            x-show="!(project.intents || []).some(i => ['high','critical'].includes(i.risk_class) && !i.approved_at && !i.concluded_at)">
+            Nothing pending.
+          </p>
+        </div>
+
+        <!-- Budget -->
+        <div class="rounded-2xl border border-slate-200 bg-white p-3" x-show="project.project.budget">
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Budget</p>
+          <div class="text-xs text-slate-600 space-y-1">
+            <template x-if="project.project.budget?.max_usd !== null && project.project.budget?.max_usd !== undefined">
+              <p x-text="`Max spend: $${project.project.budget.max_usd}`"></p>
+            </template>
+            <template x-if="project.project.budget?.max_tokens">
+              <p x-text="`Max tokens: ${project.project.budget.max_tokens.toLocaleString()}`"></p>
+            </template>
+            <template x-if="project.project.budget?.deadline">
+              <p x-text="`Deadline: ${project.project.budget.deadline}`"></p>
+            </template>
+          </div>
+        </div>
+
+        <!-- Kill switch -->
+        <div class="rounded-2xl border border-red-200 bg-red-50/60 p-3">
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-red-700 mb-2">Kill switch</p>
+          <p class="text-xs text-slate-600 mb-2">Stop the project immediately. Running leases expire; nothing new dispatches.</p>
+          <button @click="killProject()"
+            class="w-full px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition">
+            Stop project
+          </button>
+          <p x-show="killConfirm" class="text-[11px] text-red-600 mt-2">Click again to confirm.</p>
+        </div>
       </div>
 
       <!-- Detail -->
@@ -1122,6 +1178,7 @@ function cairnApp() {
     project: null,
     selectedProjectId: '',
     liveEvents: [],
+    killConfirm: false,
     _eventStream: null,
     polling: true,
     pollTimer: null,
@@ -1191,6 +1248,46 @@ function cairnApp() {
       this.startPolling();
       window.addEventListener('hashchange', () => this.handleRoute());
       this.handleRoute();
+    },
+
+    async approveIntent(intentId, approve) {
+      try {
+        const response = await fetch(
+          `/projects/${this.selectedProjectId}/intents/${intentId}/${approve ? 'approve' : 'reject'}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approver: 'operator-ui' }),
+          }
+        );
+        if (response.ok) {
+          await this.loadProject(this.selectedProjectId);
+        } else {
+          const detail = await response.json().catch(() => ({}));
+          console.warn('approval failed', detail);
+        }
+      } catch (err) {
+        console.warn('approval failed', err);
+      }
+    },
+
+    async killProject() {
+      if (!this.killConfirm) {
+        this.killConfirm = true;
+        setTimeout(() => { this.killConfirm = false; }, 4000);
+        return;
+      }
+      this.killConfirm = false;
+      try {
+        await fetch(`/projects/${this.selectedProjectId}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'stopped' }),
+        });
+        await this.loadProject(this.selectedProjectId);
+      } catch (err) {
+        console.warn('kill switch failed', err);
+      }
     },
 
     connectEventStream(projectId) {
