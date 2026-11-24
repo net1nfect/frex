@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,6 +13,13 @@ class Settings(BaseModel):
 class Fact(BaseModel):
     id: str
     description: str
+    kind: str = "observation"
+    status: str = "hypothesis"
+    confidence: float = 0.5
+    subject: dict[str, Any] | None = None
+    supersedes: str | None = None
+    created_by_run: str | None = None
+    created_at: str | None = None
 
 
 class Intent(BaseModel):

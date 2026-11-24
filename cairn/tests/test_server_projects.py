@@ -20,6 +20,11 @@ def test_create_project_returns_origin_and_goal(client):
         "origin": "start",
         "goal": "finish",
     }
+    by_id = {fact["id"]: fact for fact in body["facts"]}
+    for anchor in ("origin", "goal"):
+        assert by_id[anchor]["kind"] == anchor
+        assert by_id[anchor]["status"] == "verified"
+        assert by_id[anchor]["confidence"] == 1.0
     assert body["intents"] == []
     assert body["hints"] == []
 

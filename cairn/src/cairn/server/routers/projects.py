@@ -39,6 +39,7 @@ from cairn.server.services import (
     next_project_id,
     project_meta_from_row,
     project_reason_from_row,
+    fact_from_row,
     claim_project_reason_lease,
     refresh_project_reason_heartbeat,
     release_project_reason_lease,
@@ -92,13 +93,15 @@ def create_project(body: CreateProjectRequest):
             "INSERT INTO projects (id, title, status, created_at) VALUES (?, ?, 'active', ?)",
             (pid, body.title, now),
         )
+        # origin and goal are the project's anchors: they are true by
+        # definition, so they are born verified with full confidence.
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            ("origin", pid, body.origin),
+            "INSERT INTO facts (id, project_id, description, kind, status, confidence, created_at) VALUES (?, ?, ?, 'origin', 'verified', 1.0, ?)",
+            ("origin", pid, body.origin, now),
         )
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            ("goal", pid, body.goal),
+            "INSERT INTO facts (id, project_id, description, kind, status, confidence, created_at) VALUES (?, ?, ?, 'goal', 'verified', 1.0, ?)",
+            ("goal", pid, body.goal, now),
         )
 
         hints = []
@@ -114,8 +117,8 @@ def create_project(body: CreateProjectRequest):
         return ProjectDetail(
             project=ProjectMeta(id=pid, title=body.title, status="active", created_at=now, reason=None),
             facts=[
-                Fact(id="origin", description=body.origin),
-                Fact(id="goal", description=body.goal),
+                Fact(id="origin", description=body.origin, kind="origin", status="verified", confidence=1.0, created_at=now),
+                Fact(id="goal", description=body.goal, kind="goal", status="verified", confidence=1.0, created_at=now),
             ],
             intents=[],
             hints=hints,
@@ -130,7 +133,7 @@ def get_project(project_id: str):
         row = get_project_or_404(conn, project_id)
 
         facts = conn.execute(
-            "SELECT * FROM facts WHERE project_id = ?", (project_id,)
+            "SELECT * FROM facts WHERE project_id = ? ORDER BY rowid", (project_id,)
         ).fetchall()
         hints = conn.execute(
             "SELECT * FROM hints WHERE project_id = ? ORDER BY created_at",
@@ -139,7 +142,7 @@ def get_project(project_id: str):
 
         return ProjectDetail(
             project=project_meta_from_row(row),
-            facts=[Fact(**dict(f)) for f in facts],
+            facts=[fact_from_row(f) for f in facts],
             intents=build_intents(conn, project_id),
             hints=[Hint(**dict(h)) for h in hints],
         )
@@ -308,8 +311,8 @@ def reopen_project(project_id: str, body: ReopenRequest):
             (completion["id"], project_id),
         )
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            (fact_id, project_id, description),
+            "INSERT INTO facts (id, project_id, description, kind, status, confidence, created_at) VALUES (?, ?, ?, 'observation', 'hypothesis', 0.5, ?)",
+            (fact_id, project_id, description, now),
         )
         conn.execute(
             "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -335,6 +338,13 @@ def reopen_project(project_id: str, body: ReopenRequest):
         assert updated_intent is not None
         return ReopenResponse(
             project=project_meta_from_row(updated_project),
-            fact=Fact(id=fact_id, description=description),
+            fact=Fact(
+                id=fact_id,
+                description=description,
+                kind="observation",
+                status="hypothesis",
+                confidence=0.5,
+                created_at=now,
+            ),
             intent=intent_to_model(conn, updated_intent, project_id),
         )

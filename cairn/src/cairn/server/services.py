@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from cairn.server.models import Intent, ProjectMeta, ProjectReason
+from cairn.server.models import Fact, Intent, ProjectMeta, ProjectReason
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -203,6 +204,26 @@ def get_completion_intent_or_409(conn: sqlite3.Connection, project_id: str) -> s
     if len(rows) != 1:
         raise HTTPException(409, "Completed project has multiple completion intents")
     return rows[0]
+
+
+def fact_from_row(row: sqlite3.Row) -> Fact:
+    subject = None
+    if row["subject_json"]:
+        try:
+            subject = json.loads(row["subject_json"])
+        except (TypeError, ValueError):
+            subject = None
+    return Fact(
+        id=row["id"],
+        description=row["description"],
+        kind=row["kind"],
+        status=row["status"],
+        confidence=row["confidence"],
+        subject=subject,
+        supersedes=row["supersedes"],
+        created_by_run=row["created_by_run"],
+        created_at=row["created_at"],
+    )
 
 
 def intent_to_model(conn: sqlite3.Connection, row: sqlite3.Row, project_id: str) -> Intent:

@@ -144,6 +144,10 @@ def test_conclude_creates_fact_and_closes_intent(client, project_id):
     body = response.json()
     assert body["fact"]["id"] == "f001"
     assert body["fact"]["description"] == "port 22 is open"
+    assert body["fact"]["kind"] == "observation"
+    assert body["fact"]["status"] == "hypothesis"
+    assert body["fact"]["confidence"] == 0.5
+    assert body["fact"]["created_at"] is not None
     assert body["intent"]["to"] == "f001"
     assert body["intent"]["concluded_at"] is not None
 
