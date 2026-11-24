@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
+import json
+
 from cairn.server.db import get_conn
 from cairn.server.idempotency import (
     canonical_payload_hash,
@@ -7,9 +9,11 @@ from cairn.server.idempotency import (
     lookup_cached_response,
 )
 from cairn.server.models import (
+    DEFAULT_MATCH_RULE,
     ConcludeRequest,
     ConcludeResponse,
     CreateIntentRequest,
+    Evidence,
     Fact,
     HeartbeatRequest,
     Intent,
@@ -20,6 +24,7 @@ from cairn.server.services import (
     claim_open_intent,
     get_intent_or_404,
     intent_to_model,
+    next_evidence_id,
     next_fact_id,
     next_intent_id,
     utcnow,
@@ -138,11 +143,72 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
             now = utcnow()
             begin_intent_conclusion(conn, project_id, intent_id, body.worker, now=now)
 
+            run = None
+            if body.run_id is not None:
+                run = conn.execute(
+                    "SELECT * FROM task_runs WHERE id = ? AND project_id = ?",
+                    (body.run_id, project_id),
+                ).fetchone()
+                if run is None:
+                    raise HTTPException(404, "Run not found")
+
+            kind = body.kind
+            match_rule = body.match_rule or DEFAULT_MATCH_RULE[kind]
+
             fid = next_fact_id(conn, project_id)
             conn.execute(
-                "INSERT INTO facts (id, project_id, description, kind, status, confidence, created_at) VALUES (?, ?, ?, 'observation', 'hypothesis', 0.5, ?)",
-                (fid, project_id, body.description, now),
+                "INSERT INTO facts (id, project_id, description, kind, status, confidence, subject_json, created_by_run, created_at) VALUES (?, ?, ?, ?, 'hypothesis', ?, ?, ?, ?)",
+                (
+                    fid,
+                    project_id,
+                    body.description,
+                    kind,
+                    body.confidence,
+                    json.dumps(body.subject) if body.subject is not None else None,
+                    body.run_id,
+                    now,
+                ),
             )
+
+            evidence_rows = []
+            if run is not None:
+                evid = next_evidence_id(conn, project_id)
+                conn.execute(
+                    """
+                    INSERT INTO evidence (
+                        id, project_id, fact_id, run_id, kind, command, exit_code,
+                        match_rule, match_value, stdout_sha256, captured_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evid,
+                        project_id,
+                        fid,
+                        body.run_id,
+                        kind,
+                        run["command"],
+                        run["exit_code"],
+                        match_rule,
+                        body.match_value,
+                        run["stdout_sha256"],
+                        now,
+                    ),
+                )
+                evidence_rows.append(
+                    Evidence(
+                        id=evid,
+                        run_id=body.run_id,
+                        fact_id=fid,
+                        kind=kind,
+                        command=run["command"],
+                        exit_code=run["exit_code"],
+                        match_rule=match_rule,
+                        match_value=body.match_value,
+                        stdout_sha256=run["stdout_sha256"],
+                        captured_at=now,
+                    )
+                )
+
             conn.execute(
                 "UPDATE intents SET to_fact_id = ? WHERE id = ? AND project_id = ?",
                 (fid, intent_id, project_id),
@@ -157,11 +223,14 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
                 fact=Fact(
                     id=fid,
                     description=body.description,
-                    kind="observation",
+                    kind=kind,
                     status="hypothesis",
-                    confidence=0.5,
+                    confidence=body.confidence,
+                    subject=body.subject,
+                    created_by_run=body.run_id,
                     created_at=now,
                 ),
+                evidence=evidence_rows,
                 intent=intent_to_model(conn, updated, project_id),
             )
 

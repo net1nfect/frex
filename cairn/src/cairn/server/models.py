@@ -172,6 +172,12 @@ class ReasonClaimRequest(BaseModel):
 class ConcludeRequest(BaseModel):
     worker: str
     description: str
+    run_id: str | None = None
+    kind: Literal[FACT_KINDS] = "observation"  # type: ignore[valid-type]
+    subject: dict[str, Any] | None = None
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    match_rule: Literal[EVIDENCE_MATCH_RULES] | None = None  # type: ignore[valid-type]
+    match_value: str | None = None
     request_id: str | None = None
 
     @field_validator("worker", "description")
@@ -213,6 +219,7 @@ class CompleteRequest(BaseModel):
 
 class ConcludeResponse(BaseModel):
     fact: Fact
+    evidence: list[Evidence] = []
     intent: Intent
 
 
@@ -249,6 +256,18 @@ class ReopenResponse(BaseModel):
     project: ProjectMeta
     fact: Fact
     intent: Intent
+
+FACT_KINDS = ("observation", "credential", "access", "vulnerability", "negative", "origin", "goal")
+EVIDENCE_MATCH_RULES = ("exact", "contains", "regex", "exit_code", "manual")
+# Verification semantics per evidence kind (plan table 1.3): vulnerability
+# findings match a pattern in output; failed probes just need an exit code.
+DEFAULT_MATCH_RULE = {
+    "observation": "contains",
+    "credential": "contains",
+    "access": "contains",
+    "vulnerability": "regex",
+    "negative": "exit_code",
+}
 
 TASK_TYPES = ("bootstrap", "reason", "explore", "verify", "healthcheck")
 RUN_PHASES = ("healthcheck", "execute", "conclude", "verify")
@@ -315,3 +334,17 @@ class RunDetail(RunSummary):
     stderr_path: str | None = None
     stdout: str | None = None
     stderr: str | None = None
+
+
+class Evidence(BaseModel):
+    id: str
+    run_id: str
+    fact_id: str
+    kind: str
+    command: str | None = None
+    exit_code: int | None = None
+    match_rule: str
+    match_value: str | None = None
+    stdout_sha256: str | None = None
+    excerpt: str | None = None
+    captured_at: str

@@ -53,6 +53,10 @@ def next_run_id(conn: sqlite3.Connection, project_id: str) -> str:
     return _next_scoped_id(conn, "run", "run_", project_id)
 
 
+def next_evidence_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "evidence", "ev_", project_id)
+
+
 def get_project_or_404(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if row is None:
