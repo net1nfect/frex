@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from datetime import datetime
+import json
+
 import yaml
 
 from cairn.server.db import get_conn
@@ -25,7 +27,7 @@ def _load_project_data(conn, project_id: str):
     proj = get_project_or_404(conn, project_id)
 
     facts = conn.execute(
-        "SELECT id, description FROM facts WHERE project_id = ?", (project_id,)
+        "SELECT * FROM facts WHERE project_id = ? ORDER BY rowid", (project_id,)
     ).fetchall()
     hints = conn.execute(
         "SELECT content, creator, created_at FROM hints WHERE project_id = ? ORDER BY created_at",
@@ -76,7 +78,45 @@ def _export_yaml(conn, project_id: str) -> str:
             for h in hints
         ]
 
-    data["facts"] = [{"id": f["id"], "description": f["description"]} for f in facts]
+    # Facts carry their verification state and the runs that produced
+    # them: the graph an agent reasons over should show what is proven,
+    # not just what was claimed.
+    evidence_by_fact: dict[str, list] = {}
+    for e in conn.execute(
+        "SELECT * FROM evidence WHERE project_id = ? ORDER BY captured_at, id",
+        (project_id,),
+    ).fetchall():
+        evidence_by_fact.setdefault(e["fact_id"], []).append(e)
+
+    fact_list = []
+    for f in facts:
+        entry: dict = {
+            "id": f["id"],
+            "description": f["description"],
+            "kind": f["kind"],
+            "status": f["status"],
+            "confidence": f["confidence"],
+        }
+        if f["subject_json"]:
+            try:
+                entry["subject"] = json.loads(f["subject_json"])
+            except (TypeError, ValueError):
+                pass
+        if f["created_by_run"]:
+            entry["created_by_run"] = f["created_by_run"]
+        if f["id"] in evidence_by_fact:
+            entry["evidence"] = [
+                {
+                    "run_id": e["run_id"],
+                    "kind": e["kind"],
+                    "command": e["command"],
+                    "match_rule": e["match_rule"],
+                }
+                for e in evidence_by_fact[f["id"]]
+            ]
+        fact_list.append(entry)
+
+    data["facts"] = fact_list
 
     intent_list = []
     for i in intents:

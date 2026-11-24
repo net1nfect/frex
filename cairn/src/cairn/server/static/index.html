@@ -608,6 +608,16 @@
                           'bg-brand-50 text-brand-700': fact.id !== 'origin' && fact.id !== 'goal'
                         }" x-text="fact.id"></span>
                       <span class="text-[11px] text-slate-400 uppercase tracking-wider">Fact</span>
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                        :class="{
+                          'bg-emerald-50 text-emerald-700': fact.status === 'verified',
+                          'bg-amber-50 text-amber-700': fact.status === 'hypothesis',
+                          'bg-orange-50 text-orange-700': fact.status === 'disputed',
+                          'bg-red-50 text-red-700': fact.status === 'refuted',
+                          'bg-slate-100 text-slate-500': !fact.status || ['superseded'].includes(fact.status)
+                        }" x-text="fact.status || 'hypothesis'"></span>
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-500 bg-slate-100"
+                        x-text="fact.kind || 'observation'"></span>
                     </div>
                     <button type="button" @click="removeFactSelection(fact.id)"
                       class="text-[11px] text-slate-400 hover:text-slate-600 transition">Remove</button>
@@ -624,6 +634,13 @@
                     </template>
                     <template x-if="fact.id !== 'origin' && fact.id !== 'goal' && getProducingIntent(fact.id)">
                       <p x-text="`Produced by ${getProducingIntent(fact.id).id} from ${getProducingIntent(fact.id).from.join(', ')}`"></p>
+                    </template>
+                    <template x-if="fact.created_by_run">
+                      <p x-text="`Run ${fact.created_by_run}`"></p>
+                    </template>
+                    <template x-for="ev in (fact.evidence || [])" :key="ev.run_id + ev.kind">
+                      <p class="font-mono text-[10px] text-slate-500 break-all"
+                        x-text="`evidence: ${ev.command || ev.kind} (${ev.match_rule})`"></p>
                     </template>
                   </div>
                 </div>

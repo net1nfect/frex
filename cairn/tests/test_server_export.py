@@ -93,3 +93,55 @@ def test_export_rejects_unknown_format(client):
 
 def test_export_missing_project(client):
     assert client.get("/projects/proj_999/export").status_code == 404
+
+
+def test_export_yaml_includes_facts_v2_fields(client):
+    project_id = client.post(
+        "/projects",
+        json={"title": "lab", "origin": "start", "goal": "finish"},
+    ).json()["project"]["id"]
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "alice"},
+    ).json()["id"]
+    run_id = client.post(
+        f"/projects/{project_id}/runs",
+        json={
+            "task_type": "explore",
+            "worker": "kali-01",
+            "command": "nmap -sV 10.0.0.5",
+            "exit_code": 0,
+            "status": "success",
+            "stdout": "22/tcp open ssh",
+        },
+    ).json()["id"]
+    client.post(
+        f"/projects/{project_id}/intents/{intent_id}/conclude",
+        json={
+            "worker": "alice",
+            "description": "port 22 is open",
+            "run_id": run_id,
+            "kind": "observation",
+            "confidence": 0.9,
+            "match_value": "22/tcp",
+            "subject": {"host": "10.0.0.5"},
+        },
+    )
+
+    exported = yaml.safe_load(
+        client.get(
+            f"/projects/{project_id}/export", params={"format": "yaml"}
+        ).text
+    )
+    by_id = {f["id"]: f for f in exported["facts"]}
+    assert by_id["origin"]["status"] == "verified"
+    assert by_id["origin"]["kind"] == "origin"
+    fact = by_id["f001"]
+    assert fact["status"] == "hypothesis"
+    assert fact["confidence"] == 0.9
+    assert fact["subject"] == {"host": "10.0.0.5"}
+    assert fact["created_by_run"] == run_id
+    assert fact["evidence"][0]["run_id"] == run_id
+    assert fact["evidence"][0]["command"] == "nmap -sV 10.0.0.5"
+    # Origin and goal carry no evidence rows.
+    assert "evidence" not in by_id["origin"]
