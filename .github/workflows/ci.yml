@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        working-directory: cairn
+        run: uv sync --frozen
+      - name: Run unit tests
+        working-directory: cairn
+        run: uv run pytest -q -m "not integration"
