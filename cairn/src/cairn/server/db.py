@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _db_path: Path | None = None
 
@@ -96,6 +96,41 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     created_at TEXT NOT NULL,
     PRIMARY KEY (key, scope)
 );
+
+CREATE TABLE IF NOT EXISTS task_runs (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_type TEXT NOT NULL,
+    worker TEXT NOT NULL,
+    model TEXT,
+    phase TEXT NOT NULL DEFAULT 'execute',
+    intent_id TEXT,
+    command TEXT,
+    exit_code INTEGER,
+    timed_out INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    stdout TEXT,
+    stderr TEXT,
+    stdout_sha256 TEXT,
+    stdout_path TEXT,
+    stderr_path TEXT,
+    stdout_truncated INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    cost_usd REAL,
+    status TEXT NOT NULL,
+    client_run_id TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    PRIMARY KEY (id, project_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_runs_project
+    ON task_runs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_task_runs_intent
+    ON task_runs(project_id, intent_id);
 """
 
 
@@ -125,6 +160,50 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
         """
     ),
 }
+
+
+def _migrate_v3_create_task_runs(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS task_runs (
+            id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            task_type TEXT NOT NULL,
+            worker TEXT NOT NULL,
+            model TEXT,
+            phase TEXT NOT NULL DEFAULT 'execute',
+            intent_id TEXT,
+            command TEXT,
+            exit_code INTEGER,
+            timed_out INTEGER NOT NULL DEFAULT 0,
+            cancelled INTEGER NOT NULL DEFAULT 0,
+            stdout TEXT,
+            stderr TEXT,
+            stdout_sha256 TEXT,
+            stdout_path TEXT,
+            stderr_path TEXT,
+            stdout_truncated INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER,
+            tokens_in INTEGER,
+            tokens_out INTEGER,
+            cost_usd REAL,
+            status TEXT NOT NULL,
+            client_run_id TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            finished_at TEXT,
+            PRIMARY KEY (id, project_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_project
+            ON task_runs(project_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_runs_intent
+            ON task_runs(project_id, intent_id);
+        """
+    )
+
+
+MIGRATIONS[3] = _migrate_v3_create_task_runs
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
