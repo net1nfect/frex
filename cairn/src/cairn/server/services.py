@@ -109,30 +109,84 @@ def get_intent_or_404(
     return row
 
 
-def get_claimable_open_intent_or_404(
-    conn: sqlite3.Connection, project_id: str, intent_id: str, worker: str
+def claim_open_intent(
+    conn: sqlite3.Connection,
+    project_id: str,
+    intent_id: str,
+    worker: str,
+    now: str | None = None,
 ) -> sqlite3.Row:
-    expire_workers(conn, project_id)
+    """Claim or refresh an open intent for ``worker`` in one statement.
+
+    The lease check, the ownership check, and the write happen inside a
+    single conditional UPDATE, so two workers racing for the same intent
+    cannot both observe it as free. ``rowcount`` decides the winner; the
+    loser gets the same 409 it would have received sequentially.
+    """
+    now = now or utcnow()
+    timeout = get_intent_timeout(conn)
+    cursor = conn.execute(
+        """
+        UPDATE intents
+        SET worker = ?, last_heartbeat_at = ?
+        WHERE id = ? AND project_id = ?
+          AND to_fact_id IS NULL
+          AND (
+                worker IS NULL
+             OR worker = ?
+             OR last_heartbeat_at IS NULL
+             OR (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+          )
+        """,
+        (worker, now, intent_id, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        _raise_intent_claim_conflict(conn, project_id, intent_id)
+    return get_intent_or_404(conn, project_id, intent_id)
+
+
+def begin_intent_conclusion(
+    conn: sqlite3.Connection,
+    project_id: str,
+    intent_id: str,
+    worker: str,
+    now: str | None = None,
+) -> None:
+    """Atomically close an open intent before its fact is written.
+
+    Concluding is also a claim: the intent must be free (or already held by
+    the same worker) and not concluded. Marking it concluded first means a
+    concurrent second conclude fails here instead of inserting a duplicate
+    fact.
+    """
+    now = now or utcnow()
+    timeout = get_intent_timeout(conn)
+    cursor = conn.execute(
+        """
+        UPDATE intents
+        SET worker = ?, last_heartbeat_at = ?, concluded_at = ?
+        WHERE id = ? AND project_id = ?
+          AND to_fact_id IS NULL
+          AND (
+                worker IS NULL
+             OR worker = ?
+             OR last_heartbeat_at IS NULL
+             OR (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+          )
+        """,
+        (worker, now, now, intent_id, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        _raise_intent_claim_conflict(conn, project_id, intent_id)
+
+
+def _raise_intent_claim_conflict(
+    conn: sqlite3.Connection, project_id: str, intent_id: str
+) -> None:
     row = get_intent_or_404(conn, project_id, intent_id)
     if row["to_fact_id"] is not None:
         raise HTTPException(409, "Intent already concluded")
-    if row["worker"] is not None and row["worker"] != worker:
-        raise HTTPException(409, f"Intent is currently claimed by {row['worker']}")
-    return row
-
-
-def get_releasable_open_intent_or_404(
-    conn: sqlite3.Connection, project_id: str, intent_id: str, worker: str
-) -> sqlite3.Row:
-    expire_workers(conn, project_id)
-    row = get_intent_or_404(conn, project_id, intent_id)
-    if row["to_fact_id"] is not None:
-        raise HTTPException(409, "Intent already concluded")
-    if row["worker"] is None:
-        return row
-    if row["worker"] != worker:
-        raise HTTPException(409, f"Intent is currently claimed by {row['worker']}")
-    return row
+    raise HTTPException(409, f"Intent is currently claimed by {row['worker']}")
 
 
 def get_completion_intent_or_409(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:

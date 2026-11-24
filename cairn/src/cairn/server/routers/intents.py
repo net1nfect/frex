@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from cairn.server.db import get_conn
 from cairn.server.models import (
@@ -10,9 +10,10 @@ from cairn.server.models import (
     Intent,
 )
 from cairn.server.services import (
+    begin_intent_conclusion,
     check_project_active,
-    get_claimable_open_intent_or_404,
-    get_releasable_open_intent_or_404,
+    claim_open_intent,
+    get_intent_or_404,
     intent_to_model,
     next_fact_id,
     next_intent_id,
@@ -78,19 +79,8 @@ def create_intent(project_id: str, body: CreateIntentRequest):
 def heartbeat(project_id: str, intent_id: str, body: HeartbeatRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
-
-        now = utcnow()
-        conn.execute(
-            "UPDATE intents SET worker = ?, last_heartbeat_at = ? WHERE id = ? AND project_id = ?",
-            (body.worker, now, intent_id, project_id),
-        )
-
-        updated = conn.execute(
-            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
-            (intent_id, project_id),
-        ).fetchone()
-        return intent_to_model(conn, updated, project_id)
+        row = claim_open_intent(conn, project_id, intent_id, body.worker)
+        return intent_to_model(conn, row, project_id)
 
 
 @router.post(
@@ -100,18 +90,24 @@ def heartbeat(project_id: str, intent_id: str, body: HeartbeatRequest):
 def release(project_id: str, intent_id: str, body: HeartbeatRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        row = get_releasable_open_intent_or_404(conn, project_id, intent_id, body.worker)
-
-        if row["worker"] == body.worker:
-            conn.execute(
-                "UPDATE intents SET worker = NULL WHERE id = ? AND project_id = ?",
-                (intent_id, project_id),
+        cursor = conn.execute(
+            """
+            UPDATE intents
+            SET worker = NULL
+            WHERE id = ? AND project_id = ?
+              AND to_fact_id IS NULL
+              AND (worker IS NULL OR worker = ?)
+            """,
+            (intent_id, project_id, body.worker),
+        )
+        if cursor.rowcount == 0:
+            row = get_intent_or_404(conn, project_id, intent_id)
+            if row["to_fact_id"] is not None:
+                raise HTTPException(409, "Intent already concluded")
+            raise HTTPException(
+                409, f"Intent is currently claimed by {row['worker']}"
             )
-            row = conn.execute(
-                "SELECT * FROM intents WHERE id = ? AND project_id = ?",
-                (intent_id, project_id),
-            ).fetchone()
-
+        row = get_intent_or_404(conn, project_id, intent_id)
         return intent_to_model(conn, row, project_id)
 
 
@@ -122,18 +118,17 @@ def release(project_id: str, intent_id: str, body: HeartbeatRequest):
 def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
-
         now = utcnow()
-        fid = next_fact_id(conn, project_id)
+        begin_intent_conclusion(conn, project_id, intent_id, body.worker, now=now)
 
+        fid = next_fact_id(conn, project_id)
         conn.execute(
             "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
             (fid, project_id, body.description),
         )
         conn.execute(
-            "UPDATE intents SET to_fact_id = ?, worker = ?, last_heartbeat_at = ?, concluded_at = ? WHERE id = ? AND project_id = ?",
-            (fid, body.worker, now, now, intent_id, project_id),
+            "UPDATE intents SET to_fact_id = ? WHERE id = ? AND project_id = ?",
+            (fid, intent_id, project_id),
         )
 
         updated = conn.execute(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from cairn.server import db
@@ -186,3 +189,52 @@ def test_list_shows_unclaimed_intent_count(client, project_id):
     assert summary["intent_count"] == 1
     assert summary["unclaimed_intent_count"] == 1
     assert summary["working_intent_count"] == 0
+
+
+def test_parallel_heartbeats_claim_exactly_once(client, project_id):
+    intent = _create_intent(client, project_id).json()
+    workers = [f"w{index}" for index in range(8)]
+    barrier = threading.Barrier(len(workers))
+
+    def claim(worker):
+        barrier.wait(timeout=10)
+        response = client.post(
+            f"/projects/{project_id}/intents/{intent['id']}/heartbeat",
+            json={"worker": worker},
+        )
+        return worker, response.status_code, response.json()
+
+    with ThreadPoolExecutor(max_workers=len(workers)) as pool:
+        results = list(pool.map(claim, workers))
+
+    winners = [worker for worker, status, _ in results if status == 200]
+    losers = [status for _, status, _ in results if status != 200]
+    assert len(winners) == 1
+    assert losers == [409] * (len(workers) - 1)
+
+    detail = client.get(f"/projects/{project_id}").json()
+    assert detail["intents"][0]["worker"] == winners[0]
+
+
+def test_parallel_concludes_create_one_fact(client, project_id):
+    intent = _create_intent(client, project_id).json()
+    workers = [f"w{index}" for index in range(8)]
+    barrier = threading.Barrier(len(workers))
+
+    def conclude(worker):
+        barrier.wait(timeout=10)
+        response = client.post(
+            f"/projects/{project_id}/intents/{intent['id']}/conclude",
+            json={"worker": worker, "description": f"fact from {worker}"},
+        )
+        return response.status_code
+
+    with ThreadPoolExecutor(max_workers=len(workers)) as pool:
+        statuses = list(pool.map(conclude, workers))
+
+    assert statuses.count(200) == 1
+    assert statuses.count(409) == len(workers) - 1
+
+    detail = client.get(f"/projects/{project_id}").json()
+    assert len(detail["facts"]) == 3
+    assert [intent["to"] for intent in detail["intents"]] == ["f001"]
