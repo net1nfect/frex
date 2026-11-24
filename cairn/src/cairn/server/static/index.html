@@ -1155,10 +1155,28 @@ function cairnApp() {
       }
     },
 
+    authHeaders() {
+      const token = localStorage.getItem('cairn.apiToken');
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    },
+
+    async request(path, opts = {}, retry = true) {
+      const headers = { ...(opts.headers || {}), ...this.authHeaders() };
+      const r = await fetch(path, { ...opts, headers });
+      if (r.status === 401 && retry) {
+        const token = window.prompt('Cairn API token');
+        if (token && token.trim()) {
+          localStorage.setItem('cairn.apiToken', token.trim());
+          return this.request(path, opts, false);
+        }
+      }
+      return r;
+    },
+
     async api(method, path, body) {
       const opts = { method, headers: { 'Content-Type': 'application/json' } };
       if (body) opts.body = JSON.stringify(body);
-      const r = await fetch(path, opts);
+      const r = await this.request(path, opts);
       if (r.status === 204) return null;
       const data = await r.json();
       if (!r.ok) {
@@ -1171,7 +1189,7 @@ function cairnApp() {
     },
 
     async fetchText(path) {
-      const r = await fetch(path);
+      const r = await this.request(path);
       const text = await r.text();
       if (!r.ok) {
         let detail = text;
