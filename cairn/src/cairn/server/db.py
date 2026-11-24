@@ -3,13 +3,22 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
+
+SCHEMA_VERSION = 1
 
 _db_path: Path | None = None
 
 SCHEMA = """\
+CREATE TABLE IF NOT EXISTS schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1);
+
 CREATE TABLE IF NOT EXISTS settings (
     intent_timeout INTEGER NOT NULL DEFAULT 15,
     reason_timeout INTEGER NOT NULL DEFAULT 15
@@ -81,6 +90,49 @@ CREATE TABLE IF NOT EXISTS scoped_counters (
 """
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    if not _column_exists(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+# Each entry migrates the database from version N-1 to N. Migrations must be
+# idempotent: a crash between the DDL and the version bump re-runs them.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+    current = int(row["version"]) if row is not None else 1
+    if current >= SCHEMA_VERSION:
+        return
+    # Python's sqlite3 legacy mode does not open a transaction for DDL, so a
+    # failed migration could leave half-applied tables behind. Start one
+    # explicitly; SQLite DDL is transactional once a transaction is active.
+    started_here = not conn.in_transaction
+    if started_here:
+        conn.execute("BEGIN")
+    try:
+        for version in range(current + 1, SCHEMA_VERSION + 1):
+            migration = MIGRATIONS.get(version)
+            if migration is not None:
+                migration(conn)
+            conn.execute(
+                "UPDATE schema_version SET version = ? WHERE id = 1", (version,)
+            )
+    except Exception:
+        if started_here:
+            conn.rollback()
+        raise
+    else:
+        if started_here:
+            conn.commit()
+
+
 def configure(path: Path) -> None:
     global _db_path
     if _db_path is not None:
@@ -89,6 +141,7 @@ def configure(path: Path) -> None:
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
 
 
 def reset_for_tests() -> None:
