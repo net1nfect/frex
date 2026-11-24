@@ -417,6 +417,12 @@
     <div class="flex items-center gap-4 text-xs text-slate-400">
       <span x-text="`${project.facts.length} facts`"></span>
       <span x-text="`${project.intents.length} intents`"></span>
+      <span class="flex items-center gap-1"
+        :class="liveEvents.length ? 'text-emerald-600' : ''">
+        <span class="h-1.5 w-1.5 rounded-full"
+          :class="liveEvents.length ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'"></span>
+        <span x-text="`${liveEvents.length} live`"></span>
+      </span>
     </div>
     <div class="flex items-center gap-1.5">
       <template x-if="!replay.active">
@@ -485,6 +491,32 @@
   <div class="flex-1 flex overflow-hidden" id="graphLayout">
     <!-- Graph -->
     <div class="flex-1 relative min-w-0">
+      <!-- Live event stream (SSE) -->
+      <div x-show="liveEvents.length" x-cloak
+        class="absolute bottom-3 right-3 z-10 w-80 max-h-64 overflow-hidden rounded-xl border border-slate-200/70 bg-white/95 backdrop-blur shadow-lg flex flex-col">
+        <div class="px-3 py-2 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
+          <span class="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Live</span>
+          <div class="flex-1"></div>
+          <button @click="liveEvents = []" class="text-[11px] text-slate-400 hover:text-slate-600 transition">Clear</button>
+        </div>
+        <div class="overflow-y-auto divide-y divide-slate-50">
+          <template x-for="(ev, idx) in liveEvents" :key="idx">
+            <div class="px-3 py-1.5 flex items-start gap-2 text-xs">
+              <span class="text-[10px] font-mono text-slate-400 shrink-0" x-text="ev.at"></span>
+              <span class="font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                :class="{
+                  'bg-emerald-50 text-emerald-700': ev.kind === 'task.started' || ev.kind === 'task.finished',
+                  'bg-brand-50 text-brand-700': ev.kind.startsWith('tool'),
+                  'bg-amber-50 text-amber-700': ev.kind === 'steering.received',
+                  'bg-red-50 text-red-700': ev.kind === 'error',
+                  'bg-slate-100 text-slate-500': !['task.started','task.finished','error','steering.received'].includes(ev.kind) && !ev.kind.startsWith('tool')
+                }" x-text="ev.kind"></span>
+              <span class="text-slate-500 break-all min-w-0" x-text="ev.data ? JSON.stringify(ev.data).slice(0, 120) : ''"></span>
+            </div>
+          </template>
+        </div>
+      </div>
       <div class="absolute top-3 left-3 z-10 flex items-center gap-1.5">
         <button @click="fitGraph()" class="h-7 w-7 bg-white/90 backdrop-blur rounded-lg shadow-sm border border-slate-200/60 text-slate-500 hover:text-slate-700 hover:bg-white transition inline-flex items-center justify-center" title="Fit graph" aria-label="Fit graph">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
@@ -1089,6 +1121,8 @@ function cairnApp() {
     projects: [],
     project: null,
     selectedProjectId: '',
+    liveEvents: [],
+    _eventStream: null,
     polling: true,
     pollTimer: null,
     cy: null,
@@ -1157,6 +1191,45 @@ function cairnApp() {
       this.startPolling();
       window.addEventListener('hashchange', () => this.handleRoute());
       this.handleRoute();
+    },
+
+    connectEventStream(projectId) {
+      this.disconnectEventStream();
+      try {
+        const es = new EventSource(`/projects/${projectId}/events/stream`);
+        es.onmessage = (e) => this.pushLiveEvent(e);
+        es.addEventListener('task.started', (e) => this.pushLiveEvent(e));
+        es.addEventListener('tool.started', (e) => this.pushLiveEvent(e));
+        es.addEventListener('tool.output', (e) => this.pushLiveEvent(e));
+        es.addEventListener('steering.received', (e) => this.pushLiveEvent(e));
+        es.addEventListener('fact.created', (e) => this.pushLiveEvent(e));
+        es.addEventListener('task.finished', (e) => this.pushLiveEvent(e));
+        es.addEventListener('error', (e) => {
+          if (e.data) this.pushLiveEvent(e);
+        });
+        this._eventStream = es;
+      } catch (err) {
+        // SSE unsupported or stream failed; polling still covers updates.
+        console.warn('event stream unavailable', err);
+      }
+    },
+
+    disconnectEventStream() {
+      if (this._eventStream) {
+        this._eventStream.close();
+        this._eventStream = null;
+      }
+    },
+
+    pushLiveEvent(e) {
+      let data = null;
+      try { data = e.data ? JSON.parse(e.data) : null; } catch { data = null; }
+      this.liveEvents.unshift({
+        kind: data?.kind || e.type || 'message',
+        data: data?.data ?? null,
+        at: new Date().toLocaleTimeString(),
+      });
+      if (this.liveEvents.length > 50) this.liveEvents.pop();
     },
 
     handleRoute() {
@@ -2114,6 +2187,7 @@ function cairnApp() {
       this.selectedProjectId = id;
       this.selectedNode = null;
       this.selectedFacts = [];
+      this.connectEventStream(id);
       this.selectedTimelineEntryId = null;
       await this.loadProject(id);
       this.view = 'graph';
@@ -2147,6 +2221,8 @@ function cairnApp() {
       this.shouldRestoreProjectListScroll = true;
       this.project = null;
       this.selectedProjectId = '';
+      this.disconnectEventStream();
+      this.liveEvents = [];
       this.selectedNode = null;
       this.selectedFacts = [];
       this.selectedTimelineEntryId = null;
