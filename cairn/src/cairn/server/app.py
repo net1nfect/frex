@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from cairn import __version__
-from cairn.server import db
+from cairn.server import auth, db
 from cairn.server.routers import export, hints, intents, projects, settings
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -15,6 +15,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.configure(db.DEFAULT_DB)
+    auth.warn_if_disabled()
     yield
 
 
@@ -24,6 +25,8 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+app.middleware("http")(auth.auth_middleware)
 
 app.include_router(settings.router)
 app.include_router(projects.router)
