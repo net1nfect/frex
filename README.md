@@ -153,6 +153,28 @@ docker compose up --build
  
 This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/cairn/`.
  
+### Securing the API (optional)
+
+The API is open by default. To require a bearer token on every request,
+set the same variable on both sides:
+
+```bash
+export CAIRN_API_TOKEN="$(openssl rand -hex 32)"   # server
+export CAIRN_API_TOKEN="<same token>"              # dispatcher
+```
+
+See `docs/dev/auth.md` for rotation and UI behaviour.
+
+### Backing up before upgrading
+
+Cairn migrates its sqlite database automatically on server start
+(`schema_version` currently at 3). The migration is transactional, but a
+backup is still cheap insurance:
+
+```bash
+cp ~/.local/share/cairn/cairn.db ~/.local/share/cairn/cairn.db.bak
+```
+
 ### Manual
  
 Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then:
