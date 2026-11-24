@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _db_path: Path | None = None
 
@@ -352,6 +352,32 @@ def _migrate_v5_hint_queue(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[5] = _migrate_v5_hint_queue
+
+
+def _migrate_v6_events(conn: sqlite3.Connection) -> None:
+    # Realtime stream from the native runtime: token deltas, tool
+    # starts/outputs, task lifecycle. Monotonic per-project id (scoped
+    # counter) doubles as the SSE/polling cursor.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            task_type TEXT,
+            kind TEXT NOT NULL,
+            data TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (id, project_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_events_project_seq
+            ON events(project_id, seq);
+        """
+    )
+
+
+MIGRATIONS[6] = _migrate_v6_events
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

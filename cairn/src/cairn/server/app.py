@@ -9,6 +9,7 @@ from cairn import __version__
 from cairn.server import auth, db
 from cairn.server.routers import (
     capabilities,
+    events,
     export,
     facts,
     hints,
@@ -45,6 +46,7 @@ app.include_router(export.router)
 app.include_router(runs.router)
 app.include_router(facts.router)
 app.include_router(capabilities.router)
+app.include_router(events.router)
 
 
 @app.get("/", include_in_schema=False)
