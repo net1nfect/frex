@@ -239,6 +239,6 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
             scope,
             body.request_id,
             payload,
-            ConcludeResponse,
+            ConcludeResponse.model_validate,
             produce,
         )
