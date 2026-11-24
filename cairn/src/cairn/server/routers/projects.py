@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
+from cairn.server import artifacts
 from cairn.server.db import get_conn
 from cairn.server.idempotency import (
     canonical_payload_hash,
@@ -149,6 +150,7 @@ def delete_project(project_id: str):
     with get_conn() as conn:
         get_project_or_404(conn, project_id)
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    artifacts.remove_project(project_id)
 
 
 @router.put("/projects/{project_id}/title", response_model=ProjectMeta)

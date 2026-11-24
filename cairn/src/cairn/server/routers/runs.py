@@ -6,6 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
+from cairn.server import artifacts
 from cairn.server.db import get_conn
 from cairn.server.models import (
     MAX_RUN_OUTPUT_BYTES,
@@ -106,6 +107,20 @@ def create_run(project_id: str, body: CreateRunRequest):
             "SELECT * FROM task_runs WHERE id = ? AND project_id = ?",
             (run_id, project_id),
         ).fetchone()
+        # Artifact files are written before the commit; if the transaction
+        # still rolls back, the next sweep of the artifacts directory can
+        # remove the orphan, and the row itself keeps the full content.
+        stdout_path, stderr_path = artifacts.write_run_outputs(
+            project_id, run_id, body.stdout, body.stderr
+        )
+        conn.execute(
+            "UPDATE task_runs SET stdout_path = ?, stderr_path = ? WHERE id = ? AND project_id = ?",
+            (stdout_path, stderr_path, run_id, project_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM task_runs WHERE id = ? AND project_id = ?",
+            (run_id, project_id),
+        ).fetchone()
         return _summary_from_row(row)
 
 
@@ -159,6 +174,8 @@ def get_run(
             raise HTTPException(404, "Run not found")
         detail = RunDetail(**_summary_from_row(row).model_dump())
         detail.stdout_sha256 = row["stdout_sha256"]
+        detail.stdout_path = row["stdout_path"]
+        detail.stderr_path = row["stderr_path"]
         if include in ("stdout", "both"):
             detail.stdout = row["stdout"]
         if include in ("stderr", "both"):

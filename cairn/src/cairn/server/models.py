@@ -304,5 +304,7 @@ class RunSummary(BaseModel):
 
 class RunDetail(RunSummary):
     stdout_sha256: str | None = None
+    stdout_path: str | None = None
+    stderr_path: str | None = None
     stdout: str | None = None
     stderr: str | None = None
