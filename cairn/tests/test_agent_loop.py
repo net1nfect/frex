@@ -274,3 +274,39 @@ def test_loop_tool_executor_writes_file():
     # write goes through base64 to survive arbitrary bytes
     assert containers.executed[0][0] == "sh"
     assert "base64" in containers.executed[0][2]
+
+
+def test_event_publisher_batches_and_sends():
+    from cairn.dispatcher.runtime.event_publisher import EventPublisher
+
+    class EventClient:
+        def __init__(self):
+            self.batches = []
+
+        def post_events(self, project_id, task_type, events):
+            self.batches.append((project_id, task_type, events))
+            from cairn.dispatcher.protocol.client import ApiResult
+
+            return ApiResult(status_code=201, data={})
+
+    client = EventClient()
+    publisher = EventPublisher(client, "proj_001", "explore")
+    for i in range(5):
+        publisher.emit("tool.output", {"i": i})
+    publisher.close()
+    assert sum(len(b[2]) for b in client.batches) == 5
+    assert all(b[0] == "proj_001" and b[1] == "explore" for b in client.batches)
+
+
+def test_event_publisher_survives_server_error():
+    from cairn.dispatcher.runtime.event_publisher import EventPublisher
+
+    class FailingClient:
+        def post_events(self, *a):
+            from cairn.dispatcher.protocol.client import ApiResult
+
+            return ApiResult(status_code=500)
+
+    publisher = EventPublisher(FailingClient(), "proj_001", "explore")
+    publisher.emit("task.started", {})
+    publisher.close()  # must not raise

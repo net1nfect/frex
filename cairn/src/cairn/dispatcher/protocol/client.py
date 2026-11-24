@@ -172,6 +172,15 @@ class CairnClient:
         response.raise_for_status()
         return response.json()
 
+    def post_events(
+        self, project_id: str, task_type: str | None, events: list[dict[str, Any]]
+    ) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/events",
+            json={"task_type": task_type, "events": events},
+        )
+
     def create_verification(
         self, project_id: str, fact_id: str, payload: dict[str, Any]
     ) -> ApiResult:
