@@ -65,3 +65,26 @@ def dispatch(config_path: Path, once: bool, startup_healthcheck_only: bool, log_
         loop.run(once=once)
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.command()
+@click.option("--server", default="http://127.0.0.1:8000", show_default=True, help="Cairn server URL")
+@click.option("--project", "project_id", required=True, help="Project id to ingest into")
+@click.option("--type", "ingest_type", required=True, type=click.Choice(["nmap", "nuclei"]), help="Ingestor type")
+@click.option("--file", "input_file", required=True, type=click.Path(exists=True, dir_okay=False), help="Tool output file")
+def ingest(server: str, project_id: str, ingest_type: str, input_file: Path):
+    """Import tool output as facts without an LLM."""
+    import requests
+
+    from cairn.dispatcher.ingest import INGESTORS
+    from cairn.dispatcher.ingest.base import post_facts
+    from cairn.dispatcher.protocol.client import CairnClient
+
+    data = Path(input_file).read_text()
+    facts = INGESTORS[ingest_type](data)
+    if not facts:
+        click.echo("nothing to ingest")
+        return
+    client = CairnClient(server)
+    posted, failed = post_facts(client, project_id, facts)
+    click.echo(f"ingested {posted} facts ({failed} failed) from {ingest_type}")
