@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
@@ -264,3 +265,180 @@ def test_try_dispatch_skips_cleanup_pending():
     loop = make_loop()
     loop._cleanup_pending.add("cairn-dispatch-proj_001")
     assert loop._try_dispatch_project(make_summary()) is False
+
+
+# --- verify dispatch ---------------------------------------------------------
+
+class VerifyStubClient:
+    def __init__(self, fact_details, settings, project):
+        self.fact_details = fact_details
+        self.settings = settings
+        self.project = project
+        self.submitted = []
+
+    def get_project(self, project_id):
+        return self.project
+
+    def get_fact(self, project_id, fact_id):
+        return self.fact_details[fact_id]
+
+    def get_settings(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(verify_max_attempts=self.settings)
+
+    def export_project(self, project_id):
+        return "graph: {}"
+
+
+class _FakeExecutor:
+    def submit(self, fn, *args, **kwargs):
+        future = Future()
+        future.set_result("submitted")
+        return future
+
+
+def _make_verify_loop(client, workers):
+    loop = make_loop(workers=workers)
+    loop.client = client
+    loop.executor = _FakeExecutor()
+    return loop
+
+
+def _fact(fact_id, status="hypothesis", kind="observation"):
+    return Fact(
+        id=fact_id,
+        description=fact_id,
+        kind=kind,
+        status=status,
+        confidence=0.5,
+    )
+
+
+def test_dispatch_verify_submits_replayable_candidate():
+    project = make_project(facts=())
+    project.facts.extend([_fact("f001"), _fact("f002", status="verified")])
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": "nmap -sV", "match_rule": "contains"}],
+                "verifications": [],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(client, [make_worker("v1", task_types=("verify",))])
+    assert loop._dispatch_verify(project) is True
+    assert len(loop.futures) == 1
+    task = next(iter(loop.futures.values()))
+    assert task.task_type == "verify"
+    assert task.fact_id == "f001"
+
+
+def test_dispatch_verify_skips_facts_without_command_evidence():
+    project = make_project(facts=())
+    project.facts.append(_fact("f001"))
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": None}],
+                "verifications": [],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(client, [make_worker("v1", task_types=("verify",))])
+    assert loop._dispatch_verify(project) is False
+    assert loop.futures == {}
+
+
+def test_dispatch_verify_respects_max_attempts():
+    project = make_project(facts=())
+    project.facts.append(_fact("f001"))
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": "nmap"}],
+                "verifications": [{"id": f"ver_00{i}"} for i in range(3)],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(client, [make_worker("v1", task_types=("verify",))])
+    assert loop._dispatch_verify(project) is False
+
+
+def test_dispatch_verify_needs_worker_with_verify_task_type():
+    project = make_project(facts=())
+    project.facts.append(_fact("f001"))
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": "nmap"}],
+                "verifications": [],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(client, [make_worker("v1")])  # no verify type
+    assert loop._dispatch_verify(project) is False
+    assert loop.futures == {}
+
+
+def test_dispatch_verify_skips_facts_already_running_locally():
+    project = make_project(facts=())
+    project.facts.append(_fact("f001"))
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": "nmap"}],
+                "verifications": [],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(client, [make_worker("v1", task_types=("verify",))])
+    loop.futures[object()] = make_running(task_type="verify", intent_id=None)
+    # mark the running task as covering f001
+    next(iter(loop.futures.values())).fact_id = "f001"
+    assert loop._dispatch_verify(project) is False
+
+
+def test_try_dispatch_project_prefers_explore_over_verify():
+    intent = make_intent()
+    project = make_project(intents=(intent,), facts=())
+    project.facts.append(_fact("f001"))
+    client = VerifyStubClient(
+        {
+            "f001": {
+                "fact": {"id": "f001", "status": "hypothesis"},
+                "evidence": [{"command": "nmap"}],
+                "verifications": [],
+            }
+        },
+        settings=3,
+        project=project,
+    )
+    loop = _make_verify_loop(
+        client,
+        [make_worker("v1", task_types=("verify", "explore"))],
+    )
+    # explore claims via heartbeat; stub it to succeed
+    class _Claim:
+        ok = True
+        status_code = 200
+
+    client.heartbeat = lambda *a, **k: _Claim()
+    assert loop._try_dispatch_project(make_summary()) is True
+    task = next(iter(loop.futures.values()))
+    assert task.task_type == "explore"

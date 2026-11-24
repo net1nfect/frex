@@ -18,6 +18,7 @@ from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
+from cairn.dispatcher.tasks.verify import run_verify_task
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary
 
 LOG = logging.getLogger(__name__)
@@ -233,6 +234,8 @@ class DispatcherLoop:
             newest = max(unclaimed_intents, key=lambda i: i.created_at)
             export_yaml = self.client.export_project(summary.id)
             return self._dispatch_explore(project, export_yaml, newest)
+        if self._dispatch_verify(project):
+            return True
         if project.project.reason is not None:
             self._log_changed(
                 f"{skip_scope}:reason_claimed",
@@ -405,6 +408,84 @@ class DispatcherLoop:
         self._clear_project_log_state(project.project.id)
         LOG.info("dispatched bootstrap project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
         return True
+
+    def _dispatch_verify(self, project: ProjectDetail) -> bool:
+        """Dispatch a replay verification for one hypothesis fact.
+
+        Explore takes priority: new work beats re-checking old claims.
+        Candidates are picked locally from the project graph, but the
+        final eligibility check (evidence present, attempts left) reads
+        the fact detail so a stale graph cannot double-verify.
+        """
+        project_id = project.project.id
+        running_facts = {
+            task.fact_id
+            for task in self.futures.values()
+            if task.task_type == "verify"
+        }
+        candidates = [
+            fact
+            for fact in project.facts
+            if fact.status in ("hypothesis", "refuted", "disputed")
+            and fact.kind not in ("origin", "goal")
+            and fact.id not in running_facts
+        ]
+        if not candidates:
+            return False
+        selection = self._select_worker(project_id, "verify")
+        worker = selection.worker
+        if worker is None:
+            self._log_changed(
+                f"project:{project_id}:worker:verify",
+                logging.INFO,
+                "no worker available for verify project=%s blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s blocked_task_type=%s",
+                project_id,
+                selection.blocked_busy,
+                selection.blocked_unhealthy,
+                selection.blocked_rejected,
+                selection.blocked_task_type,
+            )
+            return False
+        self._clear_log_state(f"project:{project_id}:worker:verify")
+        max_attempts = self.client.get_settings().verify_max_attempts
+        for fact in candidates:
+            detail = self.client.get_fact(project_id, fact.id)
+            if not any(e.get("command") for e in detail["evidence"]):
+                continue
+            if len(detail["verifications"]) >= max_attempts:
+                continue
+            try:
+                future = self.executor.submit(
+                    run_verify_task,
+                    self.config,
+                    self.client,
+                    self.container_manager,
+                    project_id,
+                    fact.id,
+                    worker,
+                    cancellation := TaskCancellation(),
+                )
+            except Exception:
+                LOG.exception(
+                    "failed to submit verify task project=%s fact=%s worker=%s",
+                    project_id,
+                    fact.id,
+                    worker.name,
+                )
+                return False
+            self.futures[future] = RunningTask(
+                project_id, "verify", worker.name, cancellation, fact_id=fact.id
+            )
+            self.runtime_project_ids.add(project_id)
+            self._clear_project_log_state(project_id)
+            LOG.info(
+                "dispatched verify project=%s fact=%s worker=%s",
+                project_id,
+                fact.id,
+                worker.name,
+            )
+            return True
+        return False
 
     def _dispatch_explore(self, project: ProjectDetail, export_yaml: str, intent: Intent) -> bool:
         selection = self._select_worker(project.project.id, "explore")
