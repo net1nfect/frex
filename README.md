@@ -138,6 +138,11 @@ Not yet: verified end-to-end runs against a live self-hosted model
 (requires vLLM/Ollama in the loop), container E2E in CI, docs/en+id
 split. Claims beyond this list should not be assumed.
 
+## Documentation
+
+English docs in `docs/en/`, Indonesian versions in `docs/id/`; ADRs in
+`docs/en/adr/`.
+
 ## Further Reading
 
 - <a href="https://mp.weixin.qq.com/s/DlpEH7bVr0xi0VawPJs3XA" target="_blank" rel="noopener noreferrer">The Strongest AI Penetration Testing Agent: Postmortem of the Only Team to Achieve AK at the TCH Tencent Cloud Hackathon Intelligent Penetration Testing Challenge (2nd Edition)</a>
