@@ -172,6 +172,13 @@ class CairnClient:
         response.raise_for_status()
         return response.json()
 
+    def consume_hint_queue(self, project_id: str) -> list[dict[str, Any]]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/hint-queue"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json().get("hints", [])
+
     def post_events(
         self, project_id: str, task_type: str | None, events: list[dict[str, Any]]
     ) -> ApiResult:

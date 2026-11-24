@@ -153,7 +153,16 @@ class RunRecorder:
         # cite the run (verify -> verification.run_id) read it afterwards.
         self.last_run_id: str | None = None
 
-    def record(self, result: ProcessResult, duration_ms: int, phase: str) -> str | None:
+    def record(
+        self,
+        result: ProcessResult,
+        duration_ms: int,
+        phase: str,
+        *,
+        tokens_in: int | None = None,
+        tokens_out: int | None = None,
+        cost_usd: float | None = None,
+    ) -> str | None:
         payload = {
             "task_type": self._task_type,
             "worker": self._worker_name,
@@ -165,6 +174,9 @@ class RunRecorder:
             "timed_out": result.timed_out,
             "cancelled": result.cancelled,
             "duration_ms": duration_ms,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
             "status": run_status(result),
             "stdout": _truncate_output(result.stdout) if result.stdout else None,
             "stderr": _truncate_output(result.stderr) if result.stderr else None,

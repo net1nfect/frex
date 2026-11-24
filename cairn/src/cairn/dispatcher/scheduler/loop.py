@@ -17,6 +17,7 @@ from cairn.dispatcher.runtime.startup_healthcheck import format_failure_summary,
 from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
+from cairn.dispatcher.tasks.explore_native import run_native_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
 from cairn.dispatcher.tasks.verify import run_verify_task
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary
@@ -57,6 +58,19 @@ class DispatcherLoop:
         self.project_cursor = 0
         self._settings_checked = False
         self._startup_healthchecks_checked = False
+        # Built lazily when native explore is configured; None keeps the
+        # CLI-bridge path and avoids touching providers at startup.
+        self.provider_registry = None
+        if getattr(self.config.tasks.explore, "native", False):
+            if self.config.models and self.config.routing:
+                from cairn.dispatcher.providers.registry import ProviderRegistry
+
+                self.provider_registry = ProviderRegistry(self.config)
+            else:
+                LOG.warning(
+                    "tasks.explore.native is set but no providers/models/routing "
+                    "configured; falling back to the CLI bridge"
+                )
 
     def close(self) -> None:
         if self.futures:
@@ -525,13 +539,20 @@ class DispatcherLoop:
             )
             return False
         try:
+            explore_cfg = getattr(getattr(self.config, "tasks", None), "explore", None)
+            if getattr(explore_cfg, "native", False) and self.provider_registry is not None:
+                task_fn = run_native_explore_task
+                extra_args: tuple = (self.provider_registry,)
+            else:
+                task_fn = run_explore_task
+                extra_args = (export_yaml,)
             future = self.executor.submit(
-                run_explore_task,
+                task_fn,
                 self.config,
                 self.client,
                 self.container_manager,
                 project,
-                export_yaml,
+                *extra_args,
                 intent,
                 worker,
                 cancellation := TaskCancellation(),

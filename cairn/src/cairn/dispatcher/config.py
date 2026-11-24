@@ -134,6 +134,9 @@ class ReasonTaskConfig(BaseModel):
 class ExploreTaskConfig(BaseModel):
     timeout: int = Field(gt=0)
     conclude_timeout: int = Field(gt=0)
+    # native: run explore through the agent loop (model API + tools)
+    # instead of the CLI bridge. Requires providers/models/routing.
+    native: bool = False
 
 
 class BootstrapTaskConfig(BaseModel):
@@ -228,6 +231,10 @@ class ModelConfig(BaseModel):
     model: str  # provider-native model id
     max_tokens: int = Field(default=4096, gt=0)
     temperature: float = Field(default=0.4, ge=0, le=2)
+    # USD per million tokens, for the usage rollup. Self-hosted models
+    # are typically 0.
+    input_cost_per_mtok: float = Field(default=0.0, ge=0)
+    output_cost_per_mtok: float = Field(default=0.0, ge=0)
 
 
 class DispatchConfig(BaseModel):
