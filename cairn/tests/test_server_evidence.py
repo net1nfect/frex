@@ -409,3 +409,50 @@ def test_steering_hint_queue_consume_once(client, project_id):
     # Consumed on read: a second poll gets nothing.
     assert client.get(f"/projects/{project_id}/hint-queue").json()["hints"] == []
     assert client.get("/projects/proj_999/hint-queue").status_code == 404
+
+
+def test_resource_locks_exclusive_and_reclaimable(client, project_id):
+    # Acquire.
+    r = client.post(
+        f"/projects/{project_id}/locks/acquire",
+        json={"resource": "host:10.0.0.5", "worker": "kali-01", "ttl_seconds": 300},
+    )
+    assert r.status_code == 201
+    assert r.json()["resource"] == "host:10.0.0.5"
+
+    # Second worker is refused while held.
+    assert client.post(
+        f"/projects/{project_id}/locks/acquire",
+        json={"resource": "host:10.0.0.5", "worker": "kali-02"},
+    ).status_code == 409
+
+    # Same worker re-acquiring (idempotent holder check happens via 409
+    # for others only — the row holds one worker).
+    listing = client.get(f"/projects/{project_id}/locks").json()["locks"]
+    assert listing[0]["worker"] == "kali-01"
+
+    # Release by another worker is forbidden; by the holder works.
+    assert client.post(
+        f"/projects/{project_id}/locks/release",
+        json={"resource": "host:10.0.0.5", "worker": "kali-02"},
+    ).status_code == 403
+    assert client.post(
+        f"/projects/{project_id}/locks/release",
+        json={"resource": "host:10.0.0.5", "worker": "kali-01"},
+    ).json()["released"] is True
+    assert client.get(f"/projects/{project_id}/locks").json()["locks"] == []
+
+    # Expired lock is reclaimed: acquire with 1s TTL, then a later
+    # acquire after expiry succeeds without release.
+    import time as _time
+
+    client.post(
+        f"/projects/{project_id}/locks/acquire",
+        json={"resource": "svc:ssh", "worker": "kali-01", "ttl_seconds": 1},
+    )
+    _time.sleep(1.1)
+    r = client.post(
+        f"/projects/{project_id}/locks/acquire",
+        json={"resource": "svc:ssh", "worker": "kali-02"},
+    )
+    assert r.status_code == 201

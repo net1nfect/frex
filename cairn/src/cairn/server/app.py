@@ -14,6 +14,7 @@ from cairn.server.routers import (
     facts,
     hints,
     intents,
+    locks,
     projects,
     runs,
     settings,
@@ -47,6 +48,7 @@ app.include_router(runs.router)
 app.include_router(facts.router)
 app.include_router(capabilities.router)
 app.include_router(events.router)
+app.include_router(locks.router)
 
 
 @app.get("/", include_in_schema=False)

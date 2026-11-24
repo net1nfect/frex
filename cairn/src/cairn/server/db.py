@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _db_path: Path | None = None
 
@@ -407,6 +407,26 @@ def _migrate_v9_budget(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[9] = _migrate_v9_budget
+
+
+def _migrate_v10_resource_locks(conn: sqlite3.Connection) -> None:
+    # Exclusive access to risky targets: a worker holding the lock owns
+    # the resource; others are refused until it expires or is released.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS resource_locks (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            resource TEXT NOT NULL,
+            worker TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, resource)
+        );
+        """
+    )
+
+
+MIGRATIONS[10] = _migrate_v10_resource_locks
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
