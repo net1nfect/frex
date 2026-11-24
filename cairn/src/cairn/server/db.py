@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _db_path: Path | None = None
 
@@ -387,6 +387,17 @@ def _migrate_v7_scope(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[7] = _migrate_v7_scope
+
+
+def _migrate_v8_risk(conn: sqlite3.Connection) -> None:
+    # Risk classification per intent: high/critical intents wait for
+    # explicit operator approval before the dispatcher will run them.
+    _add_column(conn, "intents", "risk_class", "TEXT DEFAULT 'low'")
+    _add_column(conn, "intents", "approved_at", "TEXT")
+    _add_column(conn, "intents", "approved_by", "TEXT")
+
+
+MIGRATIONS[8] = _migrate_v8_risk
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

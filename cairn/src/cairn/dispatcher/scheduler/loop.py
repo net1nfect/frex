@@ -235,6 +235,7 @@ class DispatcherLoop:
             and intent.worker is None
             and intent.id not in running_intent_ids
             and not self._is_bootstrap_intent(intent)
+            and self._dispatchable_risk(intent, summary.id)
         ]
         if running_intent_ids and not unclaimed_intents:
             self._log_changed(
@@ -566,6 +567,31 @@ class DispatcherLoop:
         self._clear_project_log_state(project.project.id)
         LOG.info("dispatched explore project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
         return True
+
+    @staticmethod
+    def _dispatchable_risk(intent, project_id: str) -> bool:
+        """High/critical intents wait for operator approval.
+
+        A rejected intent (approved_by prefixed REJECTED:) never
+        dispatches; a pending one logs once and is retried on later
+        ticks so approving it from the UI takes effect without a
+        dispatcher restart.
+        """
+        risk = getattr(intent, "risk_class", "low") or "low"
+        if risk not in ("high", "critical"):
+            return True
+        approved_by = getattr(intent, "approved_by", None)
+        if approved_by and approved_by.startswith("REJECTED:"):
+            return False
+        if getattr(intent, "approved_at", None):
+            return True
+        LOG.debug(
+            "intent awaiting approval project=%s intent=%s risk=%s",
+            project_id,
+            intent.id,
+            risk,
+        )
+        return False
 
     def _select_worker(self, project_id: str, task_type: str) -> WorkerSelection:
         now = time.time()

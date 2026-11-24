@@ -10,6 +10,7 @@ from cairn.server.idempotency import (
 )
 from cairn.server.models import (
     DEFAULT_MATCH_RULE,
+    ApprovalRequest,
     ConcludeRequest,
     ConcludeResponse,
     CreateIntentRequest,
@@ -52,7 +53,7 @@ def create_intent(project_id: str, body: CreateIntentRequest):
         iid = next_intent_id(conn, project_id)
         claimed = body.worker is not None
         conn.execute(
-            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at, risk_class) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?)",
             (
                 iid,
                 project_id,
@@ -61,6 +62,7 @@ def create_intent(project_id: str, body: CreateIntentRequest):
                 body.worker,
                 now if claimed else None,
                 now,
+                body.risk_class,
             ),
         )
         for fid in body.from_:
@@ -79,7 +81,44 @@ def create_intent(project_id: str, body: CreateIntentRequest):
             last_heartbeat_at=now if claimed else None,
             created_at=now,
             concluded_at=None,
+            risk_class=body.risk_class,
         )
+
+
+@router.post("/projects/{project_id}/intents/{intent_id}/approve", response_model=Intent)
+def approve_intent(project_id: str, intent_id: str, body: ApprovalRequest):
+    """Approve a high/critical risk intent so the dispatcher may run it."""
+    with get_conn() as conn:
+        check_project_active(conn, project_id)
+        row = get_intent_or_404(conn, project_id, intent_id)
+        if row["risk_class"] not in ("high", "critical"):
+            raise HTTPException(409, f"intent is {row['risk_class']} risk; approval not required")
+        if row["approved_at"] is not None:
+            return intent_to_model(conn, row, project_id)
+        now = utcnow()
+        conn.execute(
+            "UPDATE intents SET approved_at = ?, approved_by = ? WHERE id = ? AND project_id = ?",
+            (now, body.approver, intent_id, project_id),
+        )
+        updated = get_intent_or_404(conn, project_id, intent_id)
+        return intent_to_model(conn, updated, project_id)
+
+
+@router.post("/projects/{project_id}/intents/{intent_id}/reject", response_model=Intent)
+def reject_intent(project_id: str, intent_id: str, body: ApprovalRequest):
+    """Explicitly reject a pending high-risk intent (audit trail)."""
+    with get_conn() as conn:
+        check_project_active(conn, project_id)
+        row = get_intent_or_404(conn, project_id, intent_id)
+        if row["risk_class"] not in ("high", "critical"):
+            raise HTTPException(409, f"intent is {row['risk_class']} risk; approval not required")
+        now = utcnow()
+        conn.execute(
+            "UPDATE intents SET approved_at = ?, approved_by = ? WHERE id = ? AND project_id = ?",
+            (now, f"REJECTED:{body.approver}", intent_id, project_id),
+        )
+        updated = get_intent_or_404(conn, project_id, intent_id)
+        return intent_to_model(conn, updated, project_id)
 
 
 @router.post(

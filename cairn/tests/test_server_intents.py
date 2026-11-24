@@ -242,3 +242,40 @@ def test_parallel_concludes_create_one_fact(client, project_id):
     detail = client.get(f"/projects/{project_id}").json()
     assert len(detail["facts"]) == 3
     assert [intent["to"] for intent in detail["intents"]] == ["f001"]
+
+
+def test_high_risk_intent_approval_flow(client):
+    pid = client.post("/projects", json={"title": "lab", "origin": "s", "goal": "g"}).json()["project"]["id"]
+    intent = client.post(
+        f"/projects/{pid}/intents",
+        json={"from": ["origin"], "description": "attack", "creator": "alice",
+              "risk_class": "critical"},
+    ).json()
+    assert intent["risk_class"] == "critical"
+    assert intent["approved_at"] is None
+
+    # Approving a low-risk intent is a conflict.
+    low_id = client.post(
+        f"/projects/{pid}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "alice"},
+    ).json()["id"]
+    assert client.post(f"/projects/{pid}/intents/{low_id}/approve", json={"approver": "bob"}).status_code == 409
+
+    approved = client.post(
+        f"/projects/{pid}/intents/{intent['id']}/approve", json={"approver": "bob"}
+    ).json()
+    assert approved["approved_at"] is not None
+    assert approved["approved_by"] == "bob"
+
+    # Reject records the rejection with the rejecting operator.
+    other = client.post(
+        f"/projects/{pid}/intents",
+        json={"from": ["origin"], "description": "spray", "creator": "alice", "risk_class": "high"},
+    ).json()["id"]
+    rejected = client.post(
+        f"/projects/{pid}/intents/{other}/reject", json={"approver": "carol"}
+    ).json()
+    assert rejected["approved_by"] == "REJECTED:carol"
+    assert client.post(
+        "/projects/proj_999/intents/x/approve", json={"approver": "x"}
+    ).status_code == 404

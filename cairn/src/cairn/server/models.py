@@ -24,6 +24,9 @@ class Fact(BaseModel):
     created_at: str | None = None
 
 
+RiskClass = Literal["low", "medium", "high", "critical"]
+
+
 class Intent(BaseModel):
     id: str
     from_: list[str] = Field(alias="from")
@@ -34,6 +37,9 @@ class Intent(BaseModel):
     last_heartbeat_at: str | None = None
     created_at: str
     concluded_at: str | None = None
+    risk_class: RiskClass = "low"
+    approved_at: str | None = None
+    approved_by: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -129,11 +135,23 @@ class CreateHintRequest(BaseModel):
         return text
 
 
+class ApprovalRequest(BaseModel):
+    approver: str
+
+    @field_validator("approver")
+    @classmethod
+    def validate_approver(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value.strip()
+
+
 class CreateIntentRequest(BaseModel):
     from_: list[str] = Field(alias="from", min_length=1)
     description: str
     creator: str
     worker: str | None = None
+    risk_class: Literal["low", "medium", "high", "critical"] = "low"
 
     model_config = {"populate_by_name": True}
 

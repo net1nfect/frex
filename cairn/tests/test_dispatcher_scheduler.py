@@ -442,3 +442,24 @@ def test_try_dispatch_project_prefers_explore_over_verify():
     assert loop._try_dispatch_project(make_summary()) is True
     task = next(iter(loop.futures.values()))
     assert task.task_type == "explore"
+
+
+def test_scheduler_skips_unapproved_high_risk_intent():
+    from cairn.server.models import Intent
+
+    def intent(risk, approved_at=None, approved_by=None):
+        return Intent(
+            id="iX", **{"from": ["origin"]}, description="d", creator="a",
+            created_at="t", risk_class=risk,
+            approved_at=approved_at, approved_by=approved_by,
+        )
+
+    assert DispatcherLoop._dispatchable_risk(intent("critical"), "p") is False
+    assert DispatcherLoop._dispatchable_risk(
+        intent("critical", approved_at="t", approved_by="bob"), "p"
+    ) is True
+    assert DispatcherLoop._dispatchable_risk(
+        intent("critical", approved_at="t", approved_by="REJECTED:carol"), "p"
+    ) is False
+    assert DispatcherLoop._dispatchable_risk(intent("low"), "p") is True
+    assert DispatcherLoop._dispatchable_risk(intent("medium"), "p") is True
