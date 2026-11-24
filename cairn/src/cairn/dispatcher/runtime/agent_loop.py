@@ -53,6 +53,9 @@ class AgentContext:
     # Per-step cost estimator: (tokens_in, tokens_out) -> usd.
     cost_estimator: Callable[[int, int], float] = lambda ti, to: 0.0
     on_event: Callable[[str, dict[str, Any]], None] = lambda kind, data: None
+    # stream_tokens: stream completions and emit token.delta events as
+    # they arrive. The provider adapter must support stream=True.
+    stream_tokens: bool = False
 
 
 class AgentLoop:
@@ -97,7 +100,29 @@ class AgentLoop:
                 self.ctx.on_event("steering.received", {"hint": hint})
 
             try:
-                completion: Completion = self.ctx.provider.complete(
+                if self.ctx.stream_tokens:
+                    completion: Completion = self.ctx.provider.complete(
+                        self.ctx.model,
+                        messages,
+                        tools=TOOLS_SPEC,
+                        stream=True,
+                        on_token=lambda delta: self.ctx.on_event(
+                            "token.delta", {"text": delta}
+                        ),
+                    )
+                else:
+                    completion = self.ctx.provider.complete(
+                        self.ctx.model,
+                        messages,
+                        tools=TOOLS_SPEC,
+                    )
+            except TypeError as exc:
+                # Covers adapters that predate stream=; degrade to
+                # non-streaming rather than failing the task.
+                if "stream" not in str(exc):
+                    raise
+                self.ctx.stream_tokens = False
+                completion = self.ctx.provider.complete(
                     self.ctx.model,
                     messages,
                     tools=TOOLS_SPEC,

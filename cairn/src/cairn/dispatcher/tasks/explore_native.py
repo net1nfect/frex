@@ -121,6 +121,7 @@ def run_native_explore_task(
             hint_fetcher=lambda: client.consume_hint_queue(project_id),
             cost_estimator=cost_estimator,
             on_event=publisher.emit,
+            stream_tokens=True,
         )
         outcome = AgentLoop(context).run(
             f"Intent: {intent.description}\n\nInvestigate and report via "

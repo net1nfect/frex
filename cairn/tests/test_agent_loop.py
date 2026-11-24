@@ -310,3 +310,54 @@ def test_event_publisher_survives_server_error():
     publisher = EventPublisher(FailingClient(), "proj_001", "explore")
     publisher.emit("task.started", {})
     publisher.close()  # must not raise
+
+
+def test_loop_streams_tokens_when_enabled():
+    class StreamingProvider:
+        def __init__(self):
+            self.kwargs = []
+            self.calls = 0
+
+        def complete(self, model, messages, *, tools=None, timeout_seconds=120, **kwargs):
+            self.kwargs.append(kwargs)
+            self.calls += 1
+            if self.calls == 1:
+                # Streaming path: token deltas already emitted by the
+                # adapter via on_token; return the assembled completion.
+                return completion_with_tools(
+                    ("submit_result", {"result": {"ok": 1}})
+                )
+            raise AssertionError("loop should not retry after completion")
+
+    provider = StreamingProvider()
+    events = []
+    outcome = AgentLoop(
+        make_context(
+            provider,
+            ToolExecutor(FakeContainers(), "c"),
+            stream_tokens=True,
+            on_event=lambda k, d: events.append((k, d)),
+        )
+    ).run("x")
+    assert outcome.status == "completed"
+    assert provider.kwargs[0].get("stream") is True
+    assert callable(provider.kwargs[0].get("on_token"))
+    # on_token emits token.delta events through on_event.
+    provider.kwargs[0]["on_token"]("hel")
+    provider.kwargs[0]["on_token"]("lo")
+    deltas = [d for k, d in events if k == "token.delta"]
+    assert deltas == [{"text": "hel"}, {"text": "lo"}]
+
+
+def test_loop_degrades_gracefully_when_adapter_lacks_stream():
+    class LegacyProvider(ScriptedProvider):
+        def complete(self, model, messages, *, tools=None, timeout_seconds=120):
+            return super().complete(model, messages, tools=tools, timeout_seconds=timeout_seconds)
+
+    provider = LegacyProvider(
+        [completion_with_tools(("submit_result", {"result": {"ok": 1}}))]
+    )
+    outcome = AgentLoop(
+        make_context(provider, ToolExecutor(FakeContainers(), "c"), stream_tokens=True)
+    ).run("x")
+    assert outcome.status == "completed"
