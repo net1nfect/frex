@@ -15,13 +15,12 @@ from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.tasks.common import (
+    RunRecorder,
     best_effort_release,
     cancel_reason,
     did_timeout,
     project_allows_conclude_fallback,
     preview,
-    run_healthcheck,
-    run_worker_process,
     write_conclude_result,
     write_conclude_result_with_fact_id,
 )
@@ -41,6 +40,13 @@ def run_bootstrap_task(
     cancellation: TaskCancellation,
 ) -> str:
     driver = get_driver(worker.type)
+    recorder = RunRecorder(
+        client,
+        project.project.id,
+        "bootstrap",
+        worker,
+        intent_id=intent.id,
+    )
     task_started = time.perf_counter()
     healthcheck_timeout = config.runtime.healthcheck_timeout
     lease = HeartbeatLease.for_intent(client, project.project.id, intent.id, worker.name, config.runtime.interval)
@@ -55,7 +61,7 @@ def run_bootstrap_task(
             worker.name,
             healthcheck_timeout,
         )
-        healthcheck = run_healthcheck(
+        healthcheck = recorder.run_healthcheck(
             container_manager,
             container_name,
             worker,
@@ -106,7 +112,7 @@ def run_bootstrap_task(
         execute = driver.build_execute(worker, prompt, session)
         session = execute.session
         execute_started = time.perf_counter()
-        first = run_worker_process(
+        first = recorder.run_worker_process(
             container_manager,
             container_name,
             worker,
@@ -192,6 +198,7 @@ def run_bootstrap_task(
                 data["complete_description"],
                 source="bootstrap",
                 phase_ms=execute_ms,
+                run_id=recorder.last_run_id,
                 total_ms=int((time.perf_counter() - task_started) * 1000),
             )
         if did_timeout(first):
@@ -301,7 +308,7 @@ def _try_conclude_fallback(
     conclude_argv = driver.build_conclude(worker, prompt, session)
     LOG.info("starting bootstrap conclude fallback project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
     conclude_started = time.perf_counter()
-    result = run_worker_process(
+    result = recorder.run_worker_process(
         container_manager,
         container_name,
         worker,
@@ -386,6 +393,7 @@ def _try_conclude_fallback(
         fact_description,
         source="bootstrap_conclude",
         phase_ms=conclude_ms,
+        run_id=recorder.last_run_id,
     )
 
 
@@ -418,6 +426,7 @@ def _write_bootstrap_complete_result(
     source: str,
     phase_ms: int,
     total_ms: int | None = None,
+    run_id: str | None = None,
 ) -> str:
     conclude = write_conclude_result_with_fact_id(
         client,
@@ -428,6 +437,7 @@ def _write_bootstrap_complete_result(
         source=source,
         phase_ms=phase_ms,
         total_ms=total_ms,
+        run_id=run_id,
     )
     if conclude.status != "success":
         return "failed"

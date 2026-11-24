@@ -118,11 +118,37 @@ class CairnClient:
             json={"worker": worker},
         )
 
-    def conclude(self, project_id: str, intent_id: str, worker: str, description: str) -> ApiResult:
+    def conclude(
+        self,
+        project_id: str,
+        intent_id: str,
+        worker: str,
+        description: str,
+        *,
+        run_id: str | None = None,
+        kind: str | None = None,
+        subject: dict[str, Any] | None = None,
+        confidence: float | None = None,
+        match_rule: str | None = None,
+        match_value: str | None = None,
+    ) -> ApiResult:
+        payload: dict[str, Any] = {"worker": worker, "description": description}
+        # Only set what the caller knows; the server applies per-kind
+        # defaults for anything omitted.
+        for key, value in (
+            ("run_id", run_id),
+            ("kind", kind),
+            ("subject", subject),
+            ("confidence", confidence),
+            ("match_rule", match_rule),
+            ("match_value", match_value),
+        ):
+            if value is not None:
+                payload[key] = value
         return self._request_json(
             "POST",
             f"/projects/{project_id}/intents/{intent_id}/conclude",
-            json={"worker": worker, "description": description},
+            json=payload,
         )
 
     def complete(self, project_id: str, from_ids: list[str], description: str, worker: str) -> ApiResult:

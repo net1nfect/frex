@@ -20,8 +20,6 @@ from cairn.dispatcher.tasks.common import (
     cancel_reason,
     did_timeout,
     preview,
-    run_healthcheck,
-    run_worker_process,
     write_graph_snapshot_reference,
 )
 from cairn.dispatcher.workers.registry import get_driver
@@ -40,6 +38,7 @@ def run_reason_task(
     cancellation: TaskCancellation,
 ) -> str:
     driver = get_driver(worker.type)
+    recorder = RunRecorder(client, project.project.id, "reason", worker)
     task_started = time.perf_counter()
     healthcheck_timeout = config.runtime.healthcheck_timeout
     lease = HeartbeatLease.for_reason(client, project.project.id, worker.name, config.runtime.interval)
@@ -53,7 +52,7 @@ def run_reason_task(
             worker.name,
             healthcheck_timeout,
         )
-        healthcheck = run_healthcheck(
+        healthcheck = recorder.run_healthcheck(
             container_manager,
             container_name,
             worker,
@@ -126,7 +125,7 @@ def run_reason_task(
         session = driver.prepare_session()
         command = driver.build_execute(worker, prompt, session)
         execute_started = time.perf_counter()
-        result = run_worker_process(
+        result = recorder.run_worker_process(
             container_manager,
             container_name,
             worker,

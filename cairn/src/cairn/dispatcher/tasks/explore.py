@@ -11,13 +11,12 @@ from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.tasks.common import (
+    RunRecorder,
     best_effort_release,
     cancel_reason,
     did_timeout,
     project_allows_conclude_fallback,
     preview,
-    run_healthcheck,
-    run_worker_process,
     write_conclude_result,
     write_graph_snapshot_reference,
 )
@@ -38,6 +37,13 @@ def run_explore_task(
     cancellation: TaskCancellation,
 ) -> str:
     driver = get_driver(worker.type)
+    recorder = RunRecorder(
+        client,
+        project.project.id,
+        "explore",
+        worker,
+        intent_id=intent.id,
+    )
     task_started = time.perf_counter()
     healthcheck_timeout = config.runtime.healthcheck_timeout
     lease = HeartbeatLease.for_intent(client, project.project.id, intent.id, worker.name, config.runtime.interval)
@@ -52,7 +58,7 @@ def run_explore_task(
             worker.name,
             healthcheck_timeout,
         )
-        healthcheck = run_healthcheck(
+        healthcheck = recorder.run_healthcheck(
             container_manager,
             container_name,
             worker,
@@ -121,6 +127,7 @@ def run_explore_task(
             timeout=config.tasks.explore.timeout,
             lease=lease,
             cancellation=cancellation,
+            recorder=recorder,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         session = driver.extract_session(session, first.stdout, first.stderr)
@@ -177,6 +184,7 @@ def run_explore_task(
                     session,
                     lease,
                     cancellation,
+                    recorder=recorder,
                 )
             if kind == "rejected":
                 LOG.warning(
@@ -199,6 +207,7 @@ def run_explore_task(
                 source="explore_execute",
                 phase_ms=execute_ms,
                 total_ms=int((time.perf_counter() - task_started) * 1000),
+                run_id=recorder.last_run_id,
             )
         if did_timeout(first):
             LOG.warning(
@@ -224,6 +233,7 @@ def run_explore_task(
                 session,
                 lease,
                 cancellation,
+                recorder=recorder,
             )
         LOG.warning(
             "explore command failed project=%s intent=%s worker=%s code=%s execute_ms=%s total_ms=%s stdout_preview=%s stderr_preview=%s",
@@ -259,6 +269,7 @@ def _try_conclude_fallback(
     session: str | None,
     lease: HeartbeatLease,
     cancellation: TaskCancellation,
+    recorder: RunRecorder | None = None,
 ) -> str:
     if not driver.supports_conclude() or not session:
         LOG.info(
@@ -322,6 +333,7 @@ def _try_conclude_fallback(
         timeout=config.tasks.explore.conclude_timeout,
         lease=lease,
         cancellation=cancellation,
+        recorder=recorder,
     )
     conclude_ms = int((time.perf_counter() - conclude_started) * 1000)
     cancelled = cancel_reason(result, cancellation)
@@ -389,6 +401,7 @@ def _try_conclude_fallback(
         description,
         source="explore_conclude",
         phase_ms=conclude_ms,
+        run_id=recorder.last_run_id if recorder else None,
     )
 
 
@@ -402,7 +415,19 @@ def _run_process(
     timeout: int,
     lease: HeartbeatLease,
     cancellation: TaskCancellation,
+    recorder: RunRecorder | None = None,
 ):
+    if recorder is not None:
+        return recorder.run_worker_process(
+            container_manager,
+            container_name,
+            worker,
+            argv,
+            phase=phase,
+            timeout_seconds=timeout,
+            lease=lease,
+            cancellation=cancellation,
+        )
     return run_worker_process(
         container_manager,
         container_name,

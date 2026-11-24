@@ -328,6 +328,7 @@ def write_conclude_result(
     source: str,
     phase_ms: int,
     total_ms: int | None = None,
+    run_id: str | None = None,
 ) -> str:
     return write_conclude_result_with_fact_id(
         client,
@@ -338,6 +339,7 @@ def write_conclude_result(
         source=source,
         phase_ms=phase_ms,
         total_ms=total_ms,
+        run_id=run_id,
     ).status
 
 
@@ -351,8 +353,11 @@ def write_conclude_result_with_fact_id(
     source: str,
     phase_ms: int,
     total_ms: int | None = None,
+    run_id: str | None = None,
 ) -> ConcludeWriteResult:
-    response = client.conclude(project_id, intent_id, worker_name, description)
+    response = client.conclude(
+        project_id, intent_id, worker_name, description, run_id=run_id
+    )
     if response.ok:
         fact_id: str | None = None
         if isinstance(response.data, dict):
