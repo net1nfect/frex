@@ -392,3 +392,20 @@ def test_complete_requires_goal_evidence_when_setting_enabled(client, project_id
     assert "required" in response.json()["detail"]
     fact_id = _setup_goal_evidence(client, project_id)
     assert _complete(client, project_id, goal_evidence=[fact_id]).status_code == 200
+
+
+def test_steering_hint_queue_consume_once(client, project_id):
+    client.post(
+        f"/projects/{project_id}/hint-queue",
+        json={"content": "focus on 445", "creator": "operator"},
+    )
+    client.post(
+        f"/projects/{project_id}/hint-queue",
+        json={"content": "avoid destructive", "creator": "operator"},
+    )
+
+    first = client.get(f"/projects/{project_id}/hint-queue").json()["hints"]
+    assert [h["content"] for h in first] == ["focus on 445", "avoid destructive"]
+    # Consumed on read: a second poll gets nothing.
+    assert client.get(f"/projects/{project_id}/hint-queue").json()["hints"] == []
+    assert client.get("/projects/proj_999/hint-queue").status_code == 404

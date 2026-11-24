@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _db_path: Path | None = None
 
@@ -327,6 +327,31 @@ def _migrate_v4_facts_evidence(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[4] = _migrate_v4_facts_evidence
+
+
+def _migrate_v5_hint_queue(conn: sqlite3.Connection) -> None:
+    # Steering queue for the native runtime: hints land here while a task
+    # runs and are consumed (atomically) between agent steps. Kept apart
+    # from the persistent hints table — steering is ephemeral.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS hint_queue (
+            id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            creator TEXT NOT NULL DEFAULT 'operator',
+            consumed_at TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (id, project_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hint_queue_pending
+            ON hint_queue(project_id, consumed_at);
+        """
+    )
+
+
+MIGRATIONS[5] = _migrate_v5_hint_queue
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
