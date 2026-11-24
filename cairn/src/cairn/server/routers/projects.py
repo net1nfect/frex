@@ -1,6 +1,11 @@
 from fastapi import APIRouter, HTTPException
 
 from cairn.server.db import get_conn
+from cairn.server.idempotency import (
+    canonical_payload_hash,
+    idempotent,
+    lookup_cached_response,
+)
 from cairn.server.models import (
     CompleteRequest,
     CreateProjectRequest,
@@ -212,46 +217,66 @@ def release_project_reason(project_id: str, body: HeartbeatRequest):
 @router.post("/projects/{project_id}/complete", response_model=Intent)
 def complete_project(project_id: str, body: CompleteRequest):
     with get_conn() as conn:
+        scope = f"complete:{project_id}"
+        payload = body.model_dump(by_alias=True)
+        # Replay before the status check: the first attempt completed the
+        # project, so a retry would otherwise be rejected as inactive.
+        if body.request_id:
+            cached = lookup_cached_response(
+                conn, scope, body.request_id, canonical_payload_hash(payload)
+            )
+            if cached is not None:
+                return Intent.model_validate(cached)
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
         validate_goal_not_in_sources(body.from_)
 
-        now = utcnow()
-        iid = next_intent_id(conn, project_id)
+        def produce() -> Intent:
+            now = utcnow()
+            iid = next_intent_id(conn, project_id)
 
-        conn.execute(
-            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, 'goal', ?, ?, ?, ?, ?, ?)",
-            (iid, project_id, body.description, body.worker, body.worker, now, now, now),
-        )
-        for fid in body.from_:
             conn.execute(
-                "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
-                (iid, project_id, fid),
+                "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, 'goal', ?, ?, ?, ?, ?, ?)",
+                (iid, project_id, body.description, body.worker, body.worker, now, now, now),
             )
-        conn.execute(
-            """
-            UPDATE projects
-            SET status = 'completed',
-                reason_worker = NULL,
-                reason_trigger = NULL,
-                reason_started_at = NULL,
-                reason_last_heartbeat_at = NULL
-            WHERE id = ?
-            """,
-            (project_id,),
-        )
+            for fid in body.from_:
+                conn.execute(
+                    "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+                    (iid, project_id, fid),
+                )
+            conn.execute(
+                """
+                UPDATE projects
+                SET status = 'completed',
+                    reason_worker = NULL,
+                    reason_trigger = NULL,
+                    reason_started_at = NULL,
+                    reason_last_heartbeat_at = NULL
+                WHERE id = ?
+                """,
+                (project_id,),
+            )
 
-        return Intent(
-            id=iid,
-            **{"from": body.from_},
-            to="goal",
-            description=body.description,
-            creator=body.worker,
-            worker=body.worker,
-            last_heartbeat_at=now,
-            created_at=now,
-            concluded_at=now,
+            return Intent(
+                id=iid,
+                **{"from": body.from_},
+                to="goal",
+                description=body.description,
+                creator=body.worker,
+                worker=body.worker,
+                last_heartbeat_at=now,
+                created_at=now,
+                concluded_at=now,
+            )
+
+        return idempotent(
+            conn,
+            scope,
+            body.request_id,
+            payload,
+            Intent,
+            produce,
         )
 
 

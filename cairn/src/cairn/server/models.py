@@ -165,6 +165,7 @@ class ReasonClaimRequest(BaseModel):
 class ConcludeRequest(BaseModel):
     worker: str
     description: str
+    request_id: str | None = None
 
     @field_validator("worker", "description")
     @classmethod
@@ -179,6 +180,7 @@ class CompleteRequest(BaseModel):
     from_: list[str] = Field(alias="from", min_length=1)
     description: str
     worker: str
+    request_id: str | None = None
 
     model_config = {"populate_by_name": True}
 

@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _db_path: Path | None = None
 
@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS scoped_counters (
     value INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (project_id, kind)
 );
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (key, scope)
+);
 """
 
 
@@ -102,7 +111,20 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> 
 
 # Each entry migrates the database from version N-1 to N. Migrations must be
 # idempotent: a crash between the DDL and the version bump re-runs them.
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    2: lambda conn: conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            response TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (key, scope)
+        )
+        """
+    ),
+}
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

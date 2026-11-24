@@ -42,25 +42,25 @@ def test_configure_is_idempotent_after_reset(tmp_path):
 def test_migration_runner_applies_once(tmp_path, monkeypatch):
     calls: list[int] = []
 
-    def migrate_to_two(conn):
-        calls.append(2)
+    def migrate_to_three(conn):
+        calls.append(3)
         conn.execute("CREATE TABLE IF NOT EXISTS migration_probe (id INTEGER)")
 
     db.reset_for_tests()
     db.configure(tmp_path / "cairn.db")
     try:
-        monkeypatch.setattr(db, "SCHEMA_VERSION", 2)
-        monkeypatch.setitem(db.MIGRATIONS, 2, migrate_to_two)
+        monkeypatch.setattr(db, "SCHEMA_VERSION", 3)
+        monkeypatch.setitem(db.MIGRATIONS, 3, migrate_to_three)
         with db.get_conn() as conn:
             db._migrate(conn)
-            assert _version(conn) == 2
+            assert _version(conn) == 3
             assert conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_probe'"
             ).fetchone() is not None
         with db.get_conn() as conn:
             db._migrate(conn)
-            assert _version(conn) == 2
-        assert calls == [2]
+            assert _version(conn) == 3
+        assert calls == [3]
     finally:
         db.reset_for_tests()
 
@@ -86,13 +86,13 @@ def test_migration_rolls_back_with_the_transaction(tmp_path, monkeypatch):
     db.reset_for_tests()
     db.configure(tmp_path / "cairn.db")
     try:
-        monkeypatch.setattr(db, "SCHEMA_VERSION", 2)
-        monkeypatch.setitem(db.MIGRATIONS, 2, broken_migration)
+        monkeypatch.setattr(db, "SCHEMA_VERSION", 3)
+        monkeypatch.setitem(db.MIGRATIONS, 3, broken_migration)
         with pytest.raises(RuntimeError):
             with db.get_conn() as conn:
                 db._migrate(conn)
         with db.get_conn() as conn:
-            assert _version(conn) == 1
+            assert _version(conn) == 2
             assert conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_broken'"
             ).fetchone() is None

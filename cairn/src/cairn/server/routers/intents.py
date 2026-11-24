@@ -1,6 +1,11 @@
 from fastapi import APIRouter, HTTPException
 
 from cairn.server.db import get_conn
+from cairn.server.idempotency import (
+    canonical_payload_hash,
+    idempotent,
+    lookup_cached_response,
+)
 from cairn.server.models import (
     ConcludeRequest,
     ConcludeResponse,
@@ -117,26 +122,47 @@ def release(project_id: str, intent_id: str, body: HeartbeatRequest):
 )
 def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
     with get_conn() as conn:
+        scope = f"conclude:{project_id}:{intent_id}"
+        payload = body.model_dump(by_alias=True)
+        # Replay before the status check: the first attempt may have been the
+        # last act of an active project, and a retry must not 403 on it.
+        if body.request_id:
+            cached = lookup_cached_response(
+                conn, scope, body.request_id, canonical_payload_hash(payload)
+            )
+            if cached is not None:
+                return ConcludeResponse.model_validate(cached)
         check_project_active(conn, project_id)
-        now = utcnow()
-        begin_intent_conclusion(conn, project_id, intent_id, body.worker, now=now)
 
-        fid = next_fact_id(conn, project_id)
-        conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            (fid, project_id, body.description),
-        )
-        conn.execute(
-            "UPDATE intents SET to_fact_id = ? WHERE id = ? AND project_id = ?",
-            (fid, intent_id, project_id),
-        )
+        def produce() -> ConcludeResponse:
+            now = utcnow()
+            begin_intent_conclusion(conn, project_id, intent_id, body.worker, now=now)
 
-        updated = conn.execute(
-            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
-            (intent_id, project_id),
-        ).fetchone()
+            fid = next_fact_id(conn, project_id)
+            conn.execute(
+                "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
+                (fid, project_id, body.description),
+            )
+            conn.execute(
+                "UPDATE intents SET to_fact_id = ? WHERE id = ? AND project_id = ?",
+                (fid, intent_id, project_id),
+            )
 
-        return ConcludeResponse(
-            fact=Fact(id=fid, description=body.description),
-            intent=intent_to_model(conn, updated, project_id),
+            updated = conn.execute(
+                "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+                (intent_id, project_id),
+            ).fetchone()
+
+            return ConcludeResponse(
+                fact=Fact(id=fid, description=body.description),
+                intent=intent_to_model(conn, updated, project_id),
+            )
+
+        return idempotent(
+            conn,
+            scope,
+            body.request_id,
+            payload,
+            ConcludeResponse,
+            produce,
         )
