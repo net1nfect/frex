@@ -76,3 +76,22 @@ loop berakhir.
 - `submit_result` wajib: loop tidak menerima jawaban akhir berupa prosa.
 - Scope checking pluggable; kebijakan operasi nyata didefinisikan di
   Fase 4.
+
+## Operasi (v0.3.3-ops)
+
+- **Scope**: proyek punya `scope` (domains, cidrs, exclusions). Tool
+  call di luar scope ditolak kembali ke model, bukan dieksekusi.
+  `PUT /projects/{id}/scope`.
+- **Risk & approval**: intent dengan `risk_class` high/critical
+  menunggu `POST /intents/{id}/approve` sebelum dispatcher menjalankannya;
+  `/reject` mencatat penolakan untuk audit.
+- **Budget**: `budget` proyek (max_usd, max_tokens, max_tool_calls,
+  deadline) menghentikan dispatch baru saat tercapai; task berjalan
+  tetap selesai.
+- **Resource locks**: `POST /projects/{id}/locks/acquire` — kepemilikan
+  eksklusif target berisiko dengan TTL; lock kadaluarsa direklaim otomatis.
+- **Secrets**: kredensial tersimpan terenkripsi (CAIRN_SECRET_KEY);
+  fakta mengutip `secret://name`. Nilai hanya lewat
+  `GET /secrets/{name}?reveal=1` dengan auth aktif.
+- **Ingest**: `cairn ingest --type nmap|nuclei --file <output>` mengisi
+  graf dari output tool tanpa LLM (fakta lahir terverifikasi).
