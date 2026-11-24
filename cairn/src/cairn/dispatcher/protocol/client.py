@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 import logging
+import os
 import threading
 
 from pydantic import TypeAdapter
@@ -12,6 +13,8 @@ from requests.adapters import HTTPAdapter
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary, Settings
 
 LOG = logging.getLogger(__name__)
+
+TOKEN_ENV = "CAIRN_API_TOKEN"
 
 
 class ProtocolError(RuntimeError):
@@ -33,9 +36,17 @@ class ApiResult:
 
 
 class CairnClient:
-    def __init__(self, base_url: str, timeout: float = 10.0):
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 10.0,
+        api_token: str | None = None,
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        if api_token is None:
+            api_token = os.environ.get(TOKEN_ENV, "").strip() or None
+        self._api_token = api_token
         self._summary_adapter = TypeAdapter(list[ProjectSummary])
         self._local = threading.local()
         self._sessions: dict[int, requests.Session] = {}
@@ -153,6 +164,8 @@ class CairnClient:
             return session
 
         session = requests.Session()
+        if self._api_token:
+            session.headers["Authorization"] = f"Bearer {self._api_token}"
         adapter = HTTPAdapter(pool_connections=64, pool_maxsize=64, pool_block=False)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
