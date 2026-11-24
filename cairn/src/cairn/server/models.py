@@ -217,6 +217,19 @@ class CompleteRequest(BaseModel):
         return cleaned
 
 
+class FactVerification(BaseModel):
+    id: str
+    fact_id: str
+    run_id: str | None = None
+    method: str
+    result: str
+    verifier_model: str | None = None
+    expected: str | None = None
+    observed: str | None = None
+    details: str | None = None
+    created_at: str
+
+
 class ConcludeResponse(BaseModel):
     fact: Fact
     evidence: list[Evidence] = []

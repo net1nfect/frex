@@ -143,3 +143,59 @@ def test_conclude_idempotent_replay_includes_evidence(client, project_id, intent
     assert retry.status_code == 200
     assert retry.json() == first.json()
     assert len(retry.json()["evidence"]) == 1
+
+
+def test_list_facts_filters_by_status_and_kind(client, project_id, intent_id, run_id):
+    _conclude(
+        client, project_id, intent_id, run_id=run_id, kind="credential", confidence=0.9
+    )
+    hypotheses = client.get(
+        f"/projects/{project_id}/facts", params={"status": "hypothesis"}
+    ).json()
+    assert [f["kind"] for f in hypotheses] == ["credential"]
+    verified = client.get(
+        f"/projects/{project_id}/facts", params={"status": "verified"}
+    ).json()
+    assert {f["id"] for f in verified} == {"origin", "goal"}
+    credentials = client.get(
+        f"/projects/{project_id}/facts", params={"kind": "credential"}
+    ).json()
+    assert len(credentials) == 1
+    assert credentials[0]["confidence"] == 0.9
+    assert client.get(
+        f"/projects/{project_id}/facts", params={"status": "bogus"}
+    ).json() == []
+
+
+def test_list_facts_pagination_and_missing_project(client, project_id):
+    assert client.get(
+        f"/projects/{project_id}/facts", params={"limit": 2, "offset": 1}
+    ).json()[0]["id"] == "goal"
+    assert client.get("/projects/proj_999/facts").status_code == 404
+    assert client.get(
+        f"/projects/{project_id}/facts", params={"limit": 1000}
+    ).status_code == 422
+
+
+def test_get_fact_detail_includes_evidence_and_verifications(
+    client, project_id, intent_id, run_id
+):
+    concluded = _conclude(
+        client, project_id, intent_id, run_id=run_id, kind="observation"
+    ).json()
+    fact_id = concluded["fact"]["id"]
+
+    detail = client.get(f"/projects/{project_id}/facts/{fact_id}").json()
+    assert detail["fact"]["id"] == fact_id
+    assert [e["run_id"] for e in detail["evidence"]] == [run_id]
+    assert detail["verifications"] == []
+
+    assert client.get(f"/projects/{project_id}/facts/f999").status_code == 404
+    assert client.get("/projects/proj_999/facts/origin").status_code == 404
+
+
+def test_origin_fact_has_no_evidence(client, project_id):
+    detail = client.get(f"/projects/{project_id}/facts/origin").json()
+    assert detail["fact"]["status"] == "verified"
+    assert detail["evidence"] == []
+    assert detail["verifications"] == []
