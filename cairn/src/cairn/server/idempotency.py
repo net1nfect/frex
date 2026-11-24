@@ -47,8 +47,17 @@ def store_response(
     scope: str,
     request_id: str,
     payload_hash: str,
-    response: BaseModel,
+    response: BaseModel | dict[str, Any],
 ) -> None:
+    if isinstance(response, BaseModel):
+        stored = response.model_dump_json(by_alias=True)
+    else:
+        stored = json.dumps(
+            response,
+            default=lambda o: o.model_dump(by_alias=True)
+            if isinstance(o, BaseModel)
+            else str(o),
+        )
     conn.execute(
         """
         INSERT OR IGNORE INTO idempotency_keys (key, scope, payload_hash, response, created_at)
@@ -58,7 +67,7 @@ def store_response(
             request_id,
             scope,
             payload_hash,
-            response.model_dump_json(by_alias=True),
+            stored,
             utcnow(),
         ),
     )
@@ -69,7 +78,7 @@ def idempotent(
     scope: str,
     request_id: str | None,
     payload: dict[str, Any],
-    response_type: type[T],
+    restore: Callable[[dict[str, Any]], T],
     produce: Callable[[], T],
 ) -> T:
     """Run ``produce`` once per (scope, request_id); replay it on retry.
@@ -78,13 +87,19 @@ def idempotent(
     commits atomically with the mutation it describes. A retry therefore
     never re-executes the mutation, and a request_id reused with a different
     payload is rejected instead of silently replaying the wrong response.
+    ``restore`` rebuilds the response object from stored JSON (typically
+    ``Model.model_validate``); it also accepts plain dicts.
     """
     payload_hash = canonical_payload_hash(payload)
     if request_id:
         cached = lookup_cached_response(conn, scope, request_id, payload_hash)
         if cached is not None:
-            return response_type.model_validate(cached)
+            return restore(cached)
     response = produce()
     if request_id:
         store_response(conn, scope, request_id, payload_hash, response)
     return response
+
+
+def restore_dict(cached: dict[str, Any]) -> dict[str, Any]:
+    return cached

@@ -199,3 +199,111 @@ def test_origin_fact_has_no_evidence(client, project_id):
     assert detail["fact"]["status"] == "verified"
     assert detail["evidence"] == []
     assert detail["verifications"] == []
+
+
+def _verify(client, project_id, fact_id, **overrides):
+    payload = {"method": "replay", "result": "pass"}
+    payload.update(overrides)
+    return client.post(
+        f"/projects/{project_id}/facts/{fact_id}/verifications", json=payload
+    )
+
+
+def _first_agent_fact_id(client, project_id):
+    facts = client.get(
+        f"/projects/{project_id}/facts", params={"kind": "observation"}
+    ).json()
+    return facts[0]["id"]
+
+
+def test_verification_pass_verifies_hypothesis(client, project_id, intent_id, run_id):
+    _conclude(client, project_id, intent_id, run_id=run_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    response = _verify(
+        client,
+        project_id,
+        fact_id,
+        run_id=run_id,
+        verifier_model="qwen-local",
+        expected="contains:22/tcp",
+        observed="22/tcp open ssh in output",
+        details="replayed in fresh container",
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["fact"]["status"] == "verified"
+    assert body["verification"]["id"] == "ver_001"
+    assert body["verification"]["fact_id"] == fact_id
+    assert body["verification"]["result"] == "pass"
+
+    detail = client.get(f"/projects/{project_id}/facts/{fact_id}").json()
+    assert len(detail["verifications"]) == 1
+    assert client.get(
+        f"/projects/{project_id}/facts", params={"status": "verified"}
+    ).json()
+
+
+def test_verification_fail_refutes_hypothesis(client, project_id, intent_id):
+    _conclude(client, project_id, intent_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    response = _verify(client, project_id, fact_id, result="fail")
+    assert response.status_code == 201
+    assert response.json()["fact"]["status"] == "refuted"
+
+
+def test_verification_inconclusive_keeps_status(client, project_id, intent_id):
+    _conclude(client, project_id, intent_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    response = _verify(client, project_id, fact_id, result="inconclusive")
+    assert response.json()["fact"]["status"] == "hypothesis"
+
+
+def test_verified_then_fail_becomes_disputed(client, project_id, intent_id, run_id):
+    _conclude(client, project_id, intent_id, run_id=run_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    assert _verify(client, project_id, fact_id, result="pass").status_code == 201
+    response = _verify(client, project_id, fact_id, result="fail")
+    assert response.status_code == 201
+    assert response.json()["fact"]["status"] == "disputed"
+
+
+def test_disputed_then_pass_returns_to_verified(client, project_id, intent_id, run_id):
+    _conclude(client, project_id, intent_id, run_id=run_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    _verify(client, project_id, fact_id, result="pass")
+    _verify(client, project_id, fact_id, result="fail")
+    response = _verify(client, project_id, fact_id, result="pass")
+    assert response.json()["fact"]["status"] == "verified"
+
+
+def test_refuted_then_pass_recovers(client, project_id, intent_id):
+    _conclude(client, project_id, intent_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    _verify(client, project_id, fact_id, result="fail")
+    response = _verify(client, project_id, fact_id, result="pass")
+    assert response.json()["fact"]["status"] == "verified"
+
+
+def test_verification_rejects_invalid_method_or_result(client, project_id):
+    response = _verify(
+        client, project_id, "origin", method="vibes", result="pass"
+    )
+    assert response.status_code == 422
+    response = _verify(client, project_id, "origin", result="maybe")
+    assert response.status_code == 422
+
+
+def test_verification_unknown_fact_or_run(client, project_id):
+    assert _verify(client, project_id, "f999").status_code == 404
+    assert _verify(client, project_id, "origin", run_id="run_999").status_code == 404
+
+
+def test_verification_idempotent_replay(client, project_id, intent_id, run_id):
+    _conclude(client, project_id, intent_id, run_id=run_id)
+    fact_id = _first_agent_fact_id(client, project_id)
+    first = _verify(client, project_id, fact_id, request_id="req-v1")
+    retry = _verify(client, project_id, fact_id, request_id="req-v1")
+    assert retry.status_code == 201
+    assert retry.json() == first.json()
+    detail = client.get(f"/projects/{project_id}/facts/{fact_id}").json()
+    assert len(detail["verifications"]) == 1

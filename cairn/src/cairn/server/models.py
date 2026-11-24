@@ -217,6 +217,21 @@ class CompleteRequest(BaseModel):
         return cleaned
 
 
+VERIFICATION_METHODS = ("replay", "cross_model", "operator", "ingestor")
+VERIFICATION_RESULTS = ("pass", "fail", "inconclusive")
+
+
+class CreateVerificationRequest(BaseModel):
+    run_id: str | None = None
+    method: Literal[VERIFICATION_METHODS]  # type: ignore[valid-type]
+    result: Literal[VERIFICATION_RESULTS]  # type: ignore[valid-type]
+    verifier_model: str | None = None
+    expected: str | None = None
+    observed: str | None = None
+    details: str | None = None
+    request_id: str | None = None
+
+
 class FactVerification(BaseModel):
     id: str
     fact_id: str

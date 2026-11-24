@@ -57,6 +57,26 @@ def next_evidence_id(conn: sqlite3.Connection, project_id: str) -> str:
     return _next_scoped_id(conn, "evidence", "ev_", project_id)
 
 
+def next_verification_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "verification", "ver_", project_id)
+
+
+def verification_target_status(current: str, result: str) -> str:
+    """State machine for fact verification (plan section 2.7).
+
+    pass always promotes to verified. fail refutes an unproven fact but
+    only disputes one that was verified — a refuted fact stays refuted as
+    a memory of the failure. inconclusive changes nothing.
+    """
+    if result == "pass":
+        return "verified"
+    if result == "fail":
+        if current in ("hypothesis", "refuted"):
+            return "refuted"
+        return "disputed"
+    return current
+
+
 def get_project_or_404(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if row is None:
