@@ -17,6 +17,7 @@ from cairn.server.models import (
     ProjectDetail,
     ProjectMeta,
     ProjectSummary,
+    BudgetConfig,
     ScopeConfig,
     ReopenRequest,
     ReopenResponse,
@@ -25,6 +26,7 @@ from cairn.server.models import (
     UpdateProjectStatusRequest,
 )
 from cairn.server.services import (
+    budget_from_row,
     scope_from_row,
     build_intents,
     check_project_completed,
@@ -93,12 +95,13 @@ def create_project(body: CreateProjectRequest):
         now = utcnow()
 
         conn.execute(
-            "INSERT INTO projects (id, title, status, created_at, scope_json) VALUES (?, ?, 'active', ?, ?)",
+            "INSERT INTO projects (id, title, status, created_at, scope_json, budget_json) VALUES (?, ?, 'active', ?, ?, ?)",
             (
                 pid,
                 body.title,
                 now,
                 body.scope.model_dump_json() if body.scope else None,
+                body.budget.model_dump_json() if body.budget else None,
             ),
         )
         # origin and goal are the project's anchors: they are true by
@@ -123,7 +126,10 @@ def create_project(body: CreateProjectRequest):
                 hints.append(Hint(id=hid, content=h.content, creator=h.creator, created_at=now))
 
         return ProjectDetail(
-            project=ProjectMeta(id=pid, title=body.title, status="active", created_at=now, reason=None, scope=body.scope),
+            project=ProjectMeta(
+            id=pid, title=body.title, status="active", created_at=now,
+            reason=None, scope=body.scope, budget=body.budget,
+        ),
             facts=[
                 Fact(id="origin", description=body.origin, kind="origin", status="verified", confidence=1.0, created_at=now),
                 Fact(id="goal", description=body.goal, kind="goal", status="verified", confidence=1.0, created_at=now),
@@ -194,6 +200,18 @@ def get_project_scope(project_id: str):
         row = get_project_or_404(conn, project_id)
         scope = scope_from_row(row)
         return scope if scope is not None else ScopeConfig()
+
+
+@router.put("/projects/{project_id}/budget", response_model=ProjectMeta)
+def update_project_budget(project_id: str, body: BudgetConfig):
+    with get_conn() as conn:
+        get_project_or_404(conn, project_id)
+        conn.execute(
+            "UPDATE projects SET budget_json = ? WHERE id = ?",
+            (body.model_dump_json(), project_id),
+        )
+        updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return project_meta_from_row(updated)
 
 
 @router.put("/projects/{project_id}/status", response_model=ProjectMeta)

@@ -463,3 +463,51 @@ def test_scheduler_skips_unapproved_high_risk_intent():
     ) is False
     assert DispatcherLoop._dispatchable_risk(intent("low"), "p") is True
     assert DispatcherLoop._dispatchable_risk(intent("medium"), "p") is True
+
+
+def test_budget_exhaustion_stops_dispatch():
+    loop = make_loop()
+
+    class UsageClient(ExplodingClient):
+        def __init__(self, totals):
+            self.totals = totals
+
+        def get_usage(self, project_id):
+            return {"by_task_type": {}, "totals": self.totals}
+
+    def project(budget=None):
+        from cairn.server.models import BudgetConfig
+
+        return SimpleNamespace(
+            project=SimpleNamespace(
+                id="proj_001",
+                budget=BudgetConfig(**budget) if budget else None,
+            ),
+        )
+
+    loop.client = UsageClient({"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0})
+    assert loop._budget_exhausted(project()) is False  # no budget
+    assert loop._budget_exhausted(project({"max_usd": 5.0})) is False
+
+    loop.client = UsageClient({"cost_usd": 6.0, "tokens_in": 0, "tokens_out": 0})
+    assert loop._budget_exhausted(project({"max_usd": 5.0})) is True
+
+    loop.client = UsageClient({"cost_usd": 0.0, "tokens_in": 900, "tokens_out": 200})
+    assert loop._budget_exhausted(project({"max_tokens": 1000})) is True
+    assert loop._budget_exhausted(project({"max_tokens": 5000})) is False
+
+    loop.client = UsageClient({"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0})
+    assert loop._budget_exhausted(project({"max_tool_calls": 3})) is False
+
+    # Usage query failure fails open.
+    class BrokenClient(UsageClient):
+        def get_usage(self, project_id):
+            raise RuntimeError("api down")
+
+    loop.client = BrokenClient({"totals": {}})
+    assert loop._budget_exhausted(project({"max_usd": 5.0})) is False
+
+    # Deadline in the past.
+    assert loop._budget_exhausted(
+        project({"deadline": "2000-01-01T00:00:00Z"})
+    ) is True

@@ -69,6 +69,15 @@ class ScopeConfig(BaseModel):
     notes: str = ""
 
 
+class BudgetConfig(BaseModel):
+    """Operation ceilings; the dispatcher stops dispatching when hit."""
+
+    max_usd: float | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, ge=0)
+    max_tool_calls: int | None = Field(default=None, ge=0)
+    deadline: str | None = None  # ISO timestamp
+
+
 class ProjectMeta(BaseModel):
     id: str
     title: str
@@ -76,6 +85,7 @@ class ProjectMeta(BaseModel):
     created_at: str
     reason: ProjectReason | None = None
     scope: ScopeConfig | None = None
+    budget: BudgetConfig | None = None
 
 
 class ProjectSummary(ProjectMeta):
@@ -112,6 +122,7 @@ class CreateProjectRequest(BaseModel):
     goal: str
     hints: list[CreateHintInline] | None = None
     scope: ScopeConfig | None = None
+    budget: BudgetConfig | None = None
 
     @field_validator("title", "origin", "goal")
     @classmethod

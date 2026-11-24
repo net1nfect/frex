@@ -129,3 +129,20 @@ def test_project_scope_roundtrip(client):
         "domains": [], "cidrs": [], "exclude_domains": [], "exclude_cidrs": [], "notes": ""
     }
     assert client.get("/projects/proj_999/scope").status_code == 404
+
+
+def test_project_budget_roundtrip(client):
+    body = {
+        "title": "lab", "origin": "s", "goal": "g",
+        "budget": {"max_usd": 10.0, "max_tokens": 500000, "max_tool_calls": 200,
+                   "deadline": "2027-01-31T00:00:00Z"},
+    }
+    pid = client.post("/projects", json=body).json()["project"]["id"]
+    meta = client.get(f"/projects/{pid}").json()["project"]
+    assert meta["budget"]["max_usd"] == 10.0
+    assert meta["budget"]["max_tool_calls"] == 200
+
+    updated = client.put(f"/projects/{pid}/budget", json={"max_usd": 2.5}).json()
+    assert updated["budget"]["max_usd"] == 2.5
+    assert updated["budget"]["max_tokens"] is None
+    assert client.get("/projects/proj_999/budget").status_code in (404, 405)

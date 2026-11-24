@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _db_path: Path | None = None
 
@@ -398,6 +398,15 @@ def _migrate_v8_risk(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[8] = _migrate_v8_risk
+
+
+def _migrate_v9_budget(conn: sqlite3.Connection) -> None:
+    # Operation budget: hard ceilings the dispatcher enforces before
+    # dispatching anything new.
+    _add_column(conn, "projects", "budget_json", "TEXT")
+
+
+MIGRATIONS[9] = _migrate_v9_budget
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

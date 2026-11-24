@@ -223,6 +223,14 @@ class DispatcherLoop:
                 project.project.status,
             )
             return False
+        if self._budget_exhausted(project):
+            self._log_changed(
+                f"{skip_scope}:budget",
+                logging.INFO,
+                "skip project=%s because the operation budget is exhausted",
+                summary.id,
+            )
+            return False
         if self._is_initial_project(project):
             if project.project.reason is not None:
                 return False
@@ -567,6 +575,71 @@ class DispatcherLoop:
         self._clear_project_log_state(project.project.id)
         LOG.info("dispatched explore project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
         return True
+
+    def _budget_exhausted(self, project) -> bool:
+        """True when the project hit a configured ceiling.
+
+        Budget lives on the project and is checked before dispatching
+        anything new; running tasks finish (their results are worth
+        having), but nothing new starts.
+        """
+        budget = getattr(project.project, "budget", None)
+        if budget is None:
+            return False
+        if budget.deadline:
+            try:
+                from datetime import datetime, timezone
+
+                deadline = datetime.fromisoformat(
+                    budget.deadline.replace("Z", "+00:00")
+                )
+                if datetime.now(timezone.utc) >= deadline:
+                    LOG.info(
+                        "project budget deadline passed project=%s deadline=%s",
+                        project.project.id,
+                        budget.deadline,
+                    )
+                    return True
+            except ValueError:
+                LOG.warning("invalid budget deadline project=%s", project.project.id)
+        if budget.max_usd is None and budget.max_tokens is None and budget.max_tool_calls is None:
+            return False
+        try:
+            usage = self.client.get_usage(project.project.id)
+        except Exception:
+            # Fail open on a usage query error: an API blip should not
+            # silently stop an operation.
+            LOG.warning("usage query failed project=%s", project.project.id)
+            return False
+        totals = usage.get("totals", {})
+        if budget.max_usd is not None and totals.get("cost_usd", 0) >= budget.max_usd:
+            LOG.info(
+                "project budget exhausted project=%s cost_usd=%s max=%s",
+                project.project.id,
+                totals.get("cost_usd"),
+                budget.max_usd,
+            )
+            return True
+        if budget.max_tokens is not None and totals.get("tokens_in", 0) + totals.get("tokens_out", 0) >= budget.max_tokens:
+            LOG.info(
+                "project token budget exhausted project=%s max=%s",
+                project.project.id,
+                budget.max_tokens,
+            )
+            return True
+        if budget.max_tool_calls is not None:
+            tool_runs = sum(
+                v.get("runs", 0)
+                for v in usage.get("by_task_type", {}).values()
+            )
+            if tool_runs >= budget.max_tool_calls:
+                LOG.info(
+                    "project tool-call budget exhausted project=%s max=%s",
+                    project.project.id,
+                    budget.max_tool_calls,
+                )
+                return True
+        return False
 
     @staticmethod
     def _dispatchable_risk(intent, project_id: str) -> bool:

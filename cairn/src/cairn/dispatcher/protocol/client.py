@@ -69,6 +69,13 @@ class CairnClient:
         response.raise_for_status()
         return ProjectDetail.model_validate(response.json())
 
+    def get_usage(self, project_id: str) -> dict[str, Any]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/usage"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_settings(self) -> Settings:
         response = self._session().get(self._url("/settings"), timeout=self._timeout)
         response.raise_for_status()
