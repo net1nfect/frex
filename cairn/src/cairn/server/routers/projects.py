@@ -33,6 +33,9 @@ from cairn.server.services import (
     next_project_id,
     project_meta_from_row,
     project_reason_from_row,
+    claim_project_reason_lease,
+    refresh_project_reason_heartbeat,
+    release_project_reason_lease,
     utcnow,
     validate_facts_exist,
     validate_goal_not_in_sources,
@@ -184,66 +187,26 @@ def update_project_status(project_id: str, body: UpdateProjectStatusRequest):
 def claim_project_reason(project_id: str, body: ReasonClaimRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        expire_reason_leases(conn, project_id)
-        row = get_project_or_404(conn, project_id)
-        current_worker = row["reason_worker"]
-        if current_worker is not None and current_worker != body.worker:
-            raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
-        if current_worker == body.worker:
-            return project_meta_from_row(row)
-
-        now = utcnow()
-        conn.execute(
-            """
-            UPDATE projects
-            SET reason_worker = ?,
-                reason_trigger = ?,
-                reason_started_at = ?,
-                reason_last_heartbeat_at = ?
-            WHERE id = ?
-            """,
-            (body.worker, body.trigger, now, now, project_id),
+        row = claim_project_reason_lease(
+            conn, project_id, body.worker, body.trigger
         )
-        updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(row)
 
 
 @router.post("/projects/{project_id}/reason/heartbeat", response_model=ProjectMeta)
 def heartbeat_project_reason(project_id: str, body: HeartbeatRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        expire_reason_leases(conn, project_id)
-        row = get_project_or_404(conn, project_id)
-        current_worker = row["reason_worker"]
-        if current_worker is None:
-            raise HTTPException(409, "Project reason is not currently claimed")
-        if current_worker != body.worker:
-            raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
-
-        now = utcnow()
-        conn.execute(
-            "UPDATE projects SET reason_last_heartbeat_at = ? WHERE id = ?",
-            (now, project_id),
-        )
-        updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        row = refresh_project_reason_heartbeat(conn, project_id, body.worker)
+        return project_meta_from_row(row)
 
 
 @router.post("/projects/{project_id}/reason/release", response_model=ProjectMeta)
 def release_project_reason(project_id: str, body: HeartbeatRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
-        expire_reason_leases(conn, project_id)
-        row = get_project_or_404(conn, project_id)
-        current_worker = row["reason_worker"]
-        if current_worker is None:
-            return project_meta_from_row(row)
-        if current_worker != body.worker:
-            raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
-
-        clear_project_reason(conn, project_id)
-        updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        row = release_project_reason_lease(conn, project_id, body.worker)
+        return project_meta_from_row(row)
 
 
 @router.post("/projects/{project_id}/complete", response_model=Intent)

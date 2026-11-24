@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from cairn.server import db
@@ -155,3 +158,25 @@ def test_reopen_missing_project(client):
         json={"description": "x", "creator": "alice"},
     )
     assert response.status_code == 404
+
+
+def test_parallel_reason_claims_have_one_winner(client, project_id):
+    workers = [f"w{index}" for index in range(8)]
+    barrier = threading.Barrier(len(workers))
+
+    def claim(worker):
+        barrier.wait(timeout=10)
+        response = client.post(
+            f"/projects/{project_id}/reason/claim",
+            json={"worker": worker, "trigger": "initial"},
+        )
+        return worker, response.status_code
+
+    with ThreadPoolExecutor(max_workers=len(workers)) as pool:
+        results = list(pool.map(claim, workers))
+
+    winners = [worker for worker, status in results if status == 200]
+    losers = [status for _, status in results if status != 200]
+    assert len(winners) == 1
+    assert losers == [409] * (len(workers) - 1)
+    assert client.get(f"/projects/{project_id}").json()["project"]["reason"]["worker"] == winners[0]

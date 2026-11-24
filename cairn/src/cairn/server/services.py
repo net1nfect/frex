@@ -290,6 +290,92 @@ def expire_workers(conn: sqlite3.Connection, project_id: str | None = None) -> N
     conn.execute(query, params)
 
 
+def claim_project_reason_lease(
+    conn: sqlite3.Connection,
+    project_id: str,
+    worker: str,
+    trigger: str,
+    now: str | None = None,
+) -> sqlite3.Row:
+    """Claim the project reason lease in a single conditional UPDATE.
+
+    Same pattern as ``claim_open_intent``: lease expiry, ownership, and the
+    write are one statement, so two workers racing cannot both hold the
+    lease. A re-claim by the current holder keeps the original trigger and
+    ``started_at`` instead of resetting the session.
+    """
+    now = now or utcnow()
+    timeout = get_reason_timeout(conn)
+    expired = (
+        "reason_last_heartbeat_at IS NULL"
+        " OR (julianday(?) - julianday(reason_last_heartbeat_at)) * 86400 > ?"
+    )
+    cursor = conn.execute(
+        f"""
+        UPDATE projects
+        SET reason_worker = ?,
+            reason_trigger = CASE WHEN reason_worker IS NULL OR {expired}
+                THEN ? ELSE reason_trigger END,
+            reason_started_at = CASE WHEN reason_worker IS NULL OR {expired}
+                THEN ? ELSE reason_started_at END,
+            reason_last_heartbeat_at = ?
+        WHERE id = ?
+          AND (reason_worker IS NULL OR reason_worker = ? OR {expired})
+        """,
+        (worker, now, timeout, trigger, now, timeout, now, now, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        row = get_project_or_404(conn, project_id)
+        raise HTTPException(
+            409, f"Project reason is currently claimed by {row['reason_worker']}"
+        )
+    return get_project_or_404(conn, project_id)
+
+
+def _raise_reason_lease_conflict(
+    conn: sqlite3.Connection, project_id: str
+) -> None:
+    row = get_project_or_404(conn, project_id)
+    if row["reason_worker"] is None:
+        raise HTTPException(409, "Project reason is not currently claimed")
+    raise HTTPException(
+        409, f"Project reason is currently claimed by {row['reason_worker']}"
+    )
+
+
+def refresh_project_reason_heartbeat(
+    conn: sqlite3.Connection, project_id: str, worker: str, now: str | None = None
+) -> sqlite3.Row:
+    now = now or utcnow()
+    cursor = conn.execute(
+        "UPDATE projects SET reason_last_heartbeat_at = ?"
+        " WHERE id = ? AND reason_worker = ?",
+        (now, project_id, worker),
+    )
+    if cursor.rowcount == 0:
+        _raise_reason_lease_conflict(conn, project_id)
+    return get_project_or_404(conn, project_id)
+
+
+def release_project_reason_lease(
+    conn: sqlite3.Connection, project_id: str, worker: str
+) -> sqlite3.Row:
+    cursor = conn.execute(
+        """
+        UPDATE projects
+        SET reason_worker = NULL,
+            reason_trigger = NULL,
+            reason_started_at = NULL,
+            reason_last_heartbeat_at = NULL
+        WHERE id = ? AND reason_worker = ?
+        """,
+        (project_id, worker),
+    )
+    if cursor.rowcount == 0:
+        _raise_reason_lease_conflict(conn, project_id)
+    return get_project_or_404(conn, project_id)
+
+
 def expire_reason_leases(conn: sqlite3.Connection, project_id: str | None = None) -> None:
     timeout = get_reason_timeout(conn)
     now = utcnow()
