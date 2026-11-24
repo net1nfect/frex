@@ -114,6 +114,30 @@ Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
 
 > The system had never been tested before the competition. The full pipeline came online for the first time at 4 AM on race day. No training, no tuning, no domain-specific tooling. Zero MCP tools, zero RAG, zero predefined agent roles.
 
+## Status (v0.3)
+
+Cairn v0.3 is a realtime red teaming engine. What is in the tree today
+(each verifiable in the repo, not narrative):
+
+- **Evidence & verification** — facts carry kind/status/confidence;
+  agent claims start as hypotheses and only verification flips them.
+  See `docs/adr/002-evidence-model.md`.
+- **Provider layer** — models are configuration, not images. One
+  `openai_compat` adapter covers vLLM/Ollama/llama.cpp; routing falls
+  through unhealthy models. See `docs/adr/001-provider-layer.md`.
+- **Native agent runtime** — the dispatcher runs the model loop with
+  container tools, budgets, steering, and SSE streaming end-to-end.
+  See `docs/adr/003-native-runtime.md` and `docs/dev/native-runtime.md`.
+- **Operations layer** — scope guard, risk approval gate, budget
+  ceilings, resource locks, encrypted secret refs, and tool-output
+  ingestors (`cairn ingest`).
+- **Benchmark harness** — `bench/` runs lab scenarios and compares
+  models on time-to-goal, verified facts, and cost.
+
+Not yet: verified end-to-end runs against a live self-hosted model
+(requires vLLM/Ollama in the loop), container E2E in CI, docs/en+id
+split. Claims beyond this list should not be assumed.
+
 ## Further Reading
 
 - <a href="https://mp.weixin.qq.com/s/DlpEH7bVr0xi0VawPJs3XA" target="_blank" rel="noopener noreferrer">The Strongest AI Penetration Testing Agent: Postmortem of the Only Team to Achieve AK at the TCH Tencent Cloud Hackathon Intelligent Penetration Testing Challenge (2nd Edition)</a>
