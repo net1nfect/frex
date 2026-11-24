@@ -91,6 +91,18 @@ def configure(path: Path) -> None:
         conn.executescript(SCHEMA)
 
 
+def reset_for_tests() -> None:
+    """Forget the configured database path.
+
+    Production code calls ``configure`` exactly once per process. Tests need
+    to point the module at a temporary database per test, so they call this
+    between cases. Connections are short-lived and always closed by
+    ``get_conn``; there is no global connection to tear down.
+    """
+    global _db_path
+    _db_path = None
+
+
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
     assert _db_path is not None
