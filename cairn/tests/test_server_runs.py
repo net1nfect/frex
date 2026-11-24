@@ -155,3 +155,34 @@ def test_runs_deleted_with_project(client, project_id):
         "/projects", json={"title": "t", "origin": "a", "goal": "b"}
     ).json()["project"]["id"]
     assert client.get(f"/projects/{new_id}/runs").json() == []
+
+
+def test_usage_endpoint_rolls_up_tokens_and_cost(client, project_id):
+    for i, (ti, to, cost) in enumerate([(100, 50, 0.002), (200, 100, 0.004)]):
+        response = client.post(
+            f"/projects/{project_id}/runs",
+            json={
+                "task_type": "explore",
+                "worker": "kali-01",
+                "status": "success",
+                "tokens_in": ti,
+                "tokens_out": to,
+                "cost_usd": cost,
+            },
+        )
+        assert response.status_code == 201
+    client.post(
+        f"/projects/{project_id}/runs",
+        json={"task_type": "verify", "worker": "kali-01", "status": "success"},
+    )
+
+    body = client.get(f"/projects/{project_id}/usage").json()
+    assert body["by_task_type"]["explore"]["runs"] == 2
+    assert body["by_task_type"]["explore"]["tokens_in"] == 300
+    assert body["by_task_type"]["explore"]["tokens_out"] == 150
+    assert body["by_task_type"]["explore"]["cost_usd"] == 0.006
+    assert body["by_task_type"]["verify"]["tokens_in"] == 0
+    assert body["totals"]["runs"] == 3
+    assert body["totals"]["tokens_in"] == 300
+    assert body["totals"]["cost_usd"] == 0.006
+    assert client.get("/projects/proj_999/usage").status_code == 404

@@ -181,3 +181,45 @@ def get_run(
         if include in ("stderr", "both"):
             detail.stderr = row["stderr"]
         return detail
+
+
+@router.get("/projects/{project_id}/usage")
+def project_usage(project_id: str):
+    """Token and cost totals per task type.
+
+    The dispatcher reports usage per run; this endpoint rolls it up so
+    the operator can see what each phase of the operation costs without
+    querying runs individually.
+    """
+    with get_conn() as conn:
+        get_project_or_404(conn, project_id)
+        rows = conn.execute(
+            """
+            SELECT task_type,
+                   COUNT(*) AS runs,
+                   SUM(tokens_in) AS tokens_in,
+                   SUM(tokens_out) AS tokens_out,
+                   SUM(cost_usd) AS cost_usd
+            FROM task_runs
+            WHERE project_id = ?
+            GROUP BY task_type
+            ORDER BY task_type
+            """,
+            (project_id,),
+        ).fetchall()
+        by_type = {
+            row["task_type"]: {
+                "runs": row["runs"],
+                "tokens_in": row["tokens_in"] or 0,
+                "tokens_out": row["tokens_out"] or 0,
+                "cost_usd": round(row["cost_usd"] or 0.0, 6),
+            }
+            for row in rows
+        }
+        totals = {
+            "runs": sum(v["runs"] for v in by_type.values()),
+            "tokens_in": sum(v["tokens_in"] for v in by_type.values()),
+            "tokens_out": sum(v["tokens_out"] for v in by_type.values()),
+            "cost_usd": round(sum(v["cost_usd"] for v in by_type.values()), 6),
+        }
+        return {"project_id": project_id, "by_task_type": by_type, "totals": totals}
