@@ -7,7 +7,7 @@ from typing import Callable, Generator
 
 DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _db_path: Path | None = None
 
@@ -427,6 +427,25 @@ def _migrate_v10_resource_locks(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[10] = _migrate_v10_resource_locks
+
+
+def _migrate_v11_secret_refs(conn: sqlite3.Connection) -> None:
+    # Credentials live here encrypted; facts reference them by
+    # secret://name so the graph never carries the value itself.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS secret_refs (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            ciphertext TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, name)
+        );
+        """
+    )
+
+
+MIGRATIONS[11] = _migrate_v11_secret_refs
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
