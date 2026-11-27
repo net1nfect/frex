@@ -109,9 +109,6 @@ Hasil proyek `proj_001`, intent `i001`:
 
 - `run_006` (`explore`/`execute`) sukses dalam 2 langkah, 6577 token
   masuk dan 105 token keluar, biaya 0 (model gratis).
-- Run ulang dengan `max_tokens`/`temperature` aktif (proyek `proj_002`)
-  juga sukses: `run_002`, 2 langkah, 2612 token masuk, 116 token keluar,
-  fakta `f001` = `FREX_LIVE_OK_2`.
 - Model memanggil `run_command` (`echo FREX_LIVE_OK`) lalu
   `submit_result`; output container menjadi fakta `f001` =
   `FREX_LIVE_OK` dengan `created_by_run=run_006`.
@@ -119,10 +116,16 @@ Hasil proyek `proj_001`, intent `i001`:
   `hypothesis` sampai ada verifikasi terpisah.
 - Urutan event: `task.started` → `tool.started` → `tool.output` →
   `tool.started` → `tool.output` → `task.finished`.
+- Run ulang dengan `max_tokens`/`temperature` aktif (proyek `proj_002`)
+  juga sukses: `run_002`, 2 langkah, 2612 token masuk, 116 token keluar,
+  fakta `f001` = `FREX_LIVE_OK_2`.
 
-Live run ini menemukan dua bug yang tidak tertangkap unit test dan sudah
-diperbaiki: urutan argumen registry/project di scheduler, dan wire format
-tool call/result yang ditolak gateway. Container E2E dengan image worker
-upstream juga lulus lokal pada 2026-11-27 (`FREX_E2E=1`); CI tetap
-opt-in karena image berukuran 15 GB. Yang belum diverifikasi: vLLM atau
-Ollama self-hosted secara langsung.
+Live run ini menemukan tiga bug yang tidak tertangkap unit test dan sudah
+diperbaiki: urutan argumen registry/project di scheduler, phase
+`task_runs` yang tidak valid (422 sehingga run tidak tercatat), dan wire
+format tool call/result yang ditolak gateway. Review lanjutan menemukan
+`max_tokens`/`temperature` dari config tidak pernah dikirim; sudah
+diperbaiki dan diuji live lewat proyek `proj_002`. Container E2E dengan
+image worker upstream juga lulus lokal pada 2026-11-27 (`FREX_E2E=1`);
+CI tetap opt-in karena image berukuran 15 GB. Yang belum diverifikasi:
+vLLM atau Ollama self-hosted secara langsung.
