@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -167,6 +169,32 @@ def test_openai_compat_parses_completion_and_tool_calls(provider_server):
     assert completion.usage.tokens_out == 1
     assert completion.finish_reason == "stop"
 
+
+def test_openai_compat_tolerates_trailing_gateway_junk(monkeypatch):
+    """Some gateways append SSE remnants like `data: [DONE]` after a
+    non-streaming JSON body; the adapter must still parse it."""
+    provider = OpenAICompatProvider("local", "http://x")
+    body = json.dumps(
+        {
+            "model": "m",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "pong"},
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+        }
+    )
+
+    class JunkResponse:
+        status_code = 200
+        text = body + "data: [DONE]\n\n"
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: JunkResponse())
+    completion = provider.complete("m", [{"role": "user", "content": "ping"}])
+    assert completion.text == "pong"
+    assert completion.usage.tokens_in == 5
 
 def test_openai_compat_non_retriable_error_raises_immediately(monkeypatch):
     provider = OpenAICompatProvider("local", "http://127.0.0.1:1", max_retries=2)

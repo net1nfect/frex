@@ -127,7 +127,10 @@ scheduler's registry/project argument order, invalid `task_runs` phases
 (422, so runs were never recorded), and the tool call/result wire format
 rejected by the gateway. A follow-up review found that
 `max_tokens`/`temperature` from config were never sent; that is fixed
-and was verified live via `proj_002`. Container E2E against the upstream
+and was verified live via `proj_002`. A DVWA benchmark (referee-verified
+goal, two free models, one run each) reached verified `uid=33(www-data)`
+execution on both: `oc/hy4-flash-free` in 130 s, `sn/glm-5.3-flash:flex`
+in 436 s — see `frex/bench/README.md`. Container E2E against the upstream
 worker image also passed locally on 2026-11-27 (`FREX_E2E=1`); CI stays
 opt-in because the image is 15 GB. The container workflow built and
 published `ghcr.io/net1nfect/frex-worker-container:latest` (anonymous

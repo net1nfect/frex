@@ -8,6 +8,7 @@ strategy.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -36,6 +37,31 @@ class OpenAICompatProvider:
         self.api_key = api_key
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
+
+    @staticmethod
+    def _decode_json_body(text: str) -> dict[str, Any]:
+        """Decode a JSON body, tolerating trailing non-JSON junk.
+
+        Some gateways append SSE remnants such as `data: [DONE]` after a
+        non-streaming JSON body; response.json() rejects the whole body
+        because of it. Decode the leading JSON object and ignore the rest.
+        """
+        try:
+            return json.loads(text)
+        except ValueError:
+            try:
+                body, _ = json.JSONDecoder().raw_decode(text)
+            except ValueError as exc:
+                raise ProviderError(
+                    f"provider returned invalid JSON body: {text[:200]}",
+                    retriable=True,
+                ) from exc
+            if isinstance(body, dict):
+                return body
+            raise ProviderError(
+                f"provider returned unexpected JSON body: {text[:200]}",
+                retriable=True,
+            )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -113,7 +139,9 @@ class OpenAICompatProvider:
             else:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 if response.status_code == 200:
-                    return self._parse_completion(response.json(), latency_ms)
+                    return self._parse_completion(
+                        self._decode_json_body(response.text), latency_ms
+                    )
                 last_error = ProviderError(
                     f"provider {self.name} returned {response.status_code}: {response.text[:200]}",
                     status_code=response.status_code,

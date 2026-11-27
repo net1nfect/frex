@@ -139,8 +139,9 @@ Frex v0.4 is a realtime red teaming engine. What is in the tree today
 - **Operations layer** — scope guard, risk approval gate, budget
   ceilings, resource locks, encrypted secret refs, and tool-output
   ingestors (`frex ingest`).
-- **Benchmark harness** — `bench/` runs lab scenarios and compares
-  models on time-to-goal, verified facts, and cost.
+- **Benchmark harness** — `frex/bench/` runs lab scenarios with a
+  referee-verified goal and compares models on time-to-goal, verified
+  facts, and cost.
 
 Verified live on 2026-11-27: native explore ran through an
 OpenAI-compatible gateway (9router) routed to the open-weight model
@@ -148,6 +149,13 @@ OpenAI-compatible gateway (9router) routed to the open-weight model
 `python:3.12-slim` container, completed in 2 steps (6577 tokens in, 105
 out), and concluded fact `f001` with `run_006`. Details and the exact
 event sequence are in `docs/en/native-runtime.md#live-verification-2026-11-27`.
+
+A real benchmark ran on 2026-11-27: local DVWA lab, two free
+open-weight models via the 9router gateway, both reached verified
+`uid=33(www-data)` command execution — `oc/hy4-flash-free` in 130 s
+(130k/2.5k tokens) and `sn/glm-5.3-flash:flex` in 436 s (246k/5.6k
+tokens), one run each, not a statistical comparison. Numbers and
+caveats: `frex/bench/README.md`.
 
 Container E2E against the upstream worker image passed locally on
 2026-11-27; CI keeps it opt-in via `FREX_E2E=1` because the image is

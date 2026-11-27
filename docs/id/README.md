@@ -20,8 +20,9 @@ Yang ada di tree hari ini (masing-masing terverifikasi di repo):
 - **Lapisan operasi** — scope guard, gerbang approval risiko, ceiling
   budget, resource lock, secret terenkripsi, dan ingestor output tool
   (`frex ingest`).
-- **Benchmark harness** — `bench/` menjalankan skenario lab dan
-  membandingkan model pada time-to-goal, fact terverifikasi, dan biaya.
+- **Benchmark harness** — `frex/bench/` menjalankan skenario lab dengan
+  goal diverifikasi referee dan membandingkan model pada time-to-goal,
+  fact terverifikasi, dan biaya.
 
 Terverifikasi live pada 2026-11-27: native explore lewat gateway
 OpenAI-compatible 9router ke model open-weight `oc/hy4-flash-free`,
@@ -30,8 +31,12 @@ menjalankan `echo FREX_LIVE_OK` di container, dan menghasilkan fact
 lulus lokal (`FREX_E2E=1`). Detail ada di
 `docs/id/native-runtime.md#verifikasi-live-2026-11-27`.
 
-Yang belum: vLLM/Ollama self-hosted secara langsung di loop, dan
-benchmark dengan angka sungguhan.
+Benchmark nyata pada 2026-11-27 (lab DVWA lokal, dua model gratis
+open-weight via gateway 9router, masing-masing satu run): keduanya
+mencapai command execution `uid=33(www-data)` terverifikasi —
+`oc/hy4-flash-free` dalam 130 detik, `sn/glm-5.3-flash:flex` dalam 436
+detik. Angka dan catatannya di `frex/bench/README.md`. Yang belum:
+vLLM/Ollama self-hosted secara langsung di loop.
 
 ## Menjalankan
 
