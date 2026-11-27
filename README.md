@@ -130,9 +130,14 @@ Frex v0.4 is a realtime red teaming engine. What is in the tree today
 - **Evidence & verification** — facts carry kind/status/confidence;
   agent claims start as hypotheses and only verification flips them.
   See `docs/en/adr/002-evidence-model.md`.
-- **Provider layer** — models are configuration, not images. One
-  `openai_compat` adapter covers vLLM/Ollama/llama.cpp; routing falls
-  through unhealthy models. See `docs/en/adr/001-provider-layer.md`.
+- **Provider layer** — models are configuration, not images. Adapters:
+  `openai_compat` (vLLM/Ollama/llama.cpp/gateways), native `anthropic`
+  and `gemini`. Routing chains support weighted entries, per-provider
+  key pools rotate round-robin, and a mid-run failover moves a running
+  agent loop to the next model on provider errors. The server can also
+  act as a gateway itself: set `FREX_GATEWAY_CONFIG` and other tools
+  reach every provider through `/v1/chat/completions`. See
+  `docs/en/adr/001-provider-layer.md`.
 - **Native agent runtime** — the dispatcher runs the model loop with
   container tools, budgets, steering, and SSE streaming end-to-end.
   See `docs/en/adr/003-native-runtime.md` and `docs/en/native-runtime.md`.

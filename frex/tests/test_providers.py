@@ -41,17 +41,27 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+            message = {"role": "assistant", "content": "pong"}
+            if body.get("tools"):
+                message["content"] = None
+                message["tool_calls"] = [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": body["tools"][0]["function"]["name"],
+                            "arguments": "{}",
+                        },
+                    }
+                ]
             self.wfile.write(
                 json.dumps(
                     {
                         "model": body["model"],
                         "choices": [
                             {
-                                "finish_reason": "stop",
-                                "message": {
-                                    "role": "assistant",
-                                    "content": "pong",
-                                },
+                                "finish_reason": "tool_calls" if body.get("tools") else "stop",
+                                "message": message,
                             }
                         ],
                         "usage": {"prompt_tokens": 5, "completion_tokens": 1},

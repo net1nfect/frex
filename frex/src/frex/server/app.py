@@ -20,6 +20,7 @@ from frex.server.routers import (
     secrets,
     settings,
 )
+from frex.server import gateway
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -51,6 +52,7 @@ app.include_router(capabilities.router)
 app.include_router(events.router)
 app.include_router(locks.router)
 app.include_router(secrets.router)
+app.include_router(gateway.router)
 
 
 @app.get("/", include_in_schema=False)

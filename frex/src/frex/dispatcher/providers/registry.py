@@ -126,6 +126,21 @@ class ProviderRegistry:
         model = self._models[model_name]
         return self._providers[model.provider]
 
+    def model_names(self) -> list[str]:
+        """Configured model names, in config order."""
+        return list(self._models)
+
+    def model_config(self, model_name: str) -> "ModelConfig":
+        return self._models[model_name]
+
+    def find_model_by_native_id(self, native_id: str) -> "ModelConfig | None":
+        """Look a model up by its provider-native id (e.g. a gateway
+        client asking for `qwen-local` instead of our alias `fast`)."""
+        for model in self._models.values():
+            if model.model == native_id:
+                return model
+        return None
+
     def routing_chain(self, task_type: str) -> list["ModelConfig"]:
         chain = self._routing.get(task_type)
         if not chain:
