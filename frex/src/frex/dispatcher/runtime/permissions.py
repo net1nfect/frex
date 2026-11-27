@@ -43,6 +43,9 @@ DEFAULT_TOOL_TIERS: dict[str, int] = {
     "crawl_site": 1,
     # tier 2 — session approval
     "service_check": 2,
+    # Submitting credentials to a (scope-checked) login endpoint is a
+    # state-changing action: approval once per session/target.
+    "session_authenticate": 2,
     # tier 3 — explicit approval every time
     "default_creds_check": 3,
     # Generic container tools: the scope guard governs their targets;
@@ -54,7 +57,16 @@ DEFAULT_TOOL_TIERS: dict[str, int] = {
 }
 
 # Internal bookkeeping tools never hit the gate.
-GATE_EXEMPT = {"submit_facts", "submit_result", "submit_action_log", "interactsh_generate", "interactsh_poll"}
+GATE_EXEMPT = {
+    "submit_facts",
+    "submit_result",
+    "submit_action_log",
+    "interactsh_generate",
+    "interactsh_poll",
+    # Meta tool: its STEPS are individually gated inside SkillRunner,
+    # which is the same gate a manual call would hit.
+    "run_skill",
+}
 
 
 @dataclass(slots=True)

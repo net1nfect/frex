@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 from frex.dispatcher.config import DispatchConfig, WorkerConfig
 from frex.dispatcher.protocol.client import FrexClient
@@ -168,6 +169,17 @@ def run_native_explore_task(
             except Exception:
                 return None
 
+        # Skills layer: playbooks loaded from the packaged skills dir.
+        # The runner shares THIS executor and THIS gate, so every step
+        # inside a skill passes the same guards as a manual tool call.
+        from frex.dispatcher.runtime.skills import SkillRunner, load_skills
+
+        skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        skill_runner = SkillRunner(
+            skills=load_skills(skills_dir),
+            executor=None,  # replaced below; runner needs the executor
+            gate=None,  # wired to the gate right after it is built
+        )
         executor = ToolExecutor(
             container_manager,
             container_name,
@@ -179,7 +191,9 @@ def run_native_explore_task(
             interactsh_factory=make_interactsh,
             action_log_sink=record_action_log,
             facts_lookup=fact_lookup,
+            skill_runner=skill_runner,
         )
+        skill_runner._executor = executor
         tools_spec = TOOLS_SPEC
         if enabled_set is not None:
             tools_spec = [tool for tool in TOOLS_SPEC if tool["name"] in enabled_set]
@@ -249,6 +263,7 @@ def run_native_explore_task(
             approval_handler=cli_approval_handler,
             audit_sink=audit_permission,
         )
+        skill_runner._gate = permission_gate
 
         context = AgentContext(
             provider=provider,

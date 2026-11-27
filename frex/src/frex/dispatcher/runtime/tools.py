@@ -587,6 +587,8 @@ class ToolExecutor:
         # get_fact_detail lookup: fact_id -> full record. None makes
         # the tool report unavailability.
         facts_lookup: Callable[[str], dict[str, Any] | None] | None = None,
+        # Skill runner for the run_skill meta tool. None -> unavailable.
+        skill_runner: Any | None = None,
     ):
         self._container_manager = container_manager
         self._container_name = container_name
@@ -610,6 +612,7 @@ class ToolExecutor:
         # get_fact_detail lookup: fact_id -> full record. None makes
         # the tool report unavailability.
         self._facts_lookup = facts_lookup
+        self._skill_runner = skill_runner
         self._action_log_sink = action_log_sink or (
             (lambda entry: facts_sink([entry]) if facts_sink else 0)
         )
@@ -1652,6 +1655,35 @@ class ToolExecutor:
                 "count": len(endpoints),
                 "truncated": truncated,
                 "depth": depth,
+            },
+        )
+
+    def _tool_run_skill(self, args: dict[str, Any]) -> ToolResult:
+        if self._skill_runner is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "no skills are loaded for this deployment"},
+            )
+        skill_name = args.pop("skill", None)
+        if not isinstance(skill_name, str) or not skill_name.strip():
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": "skill is required"}
+            )
+        try:
+            run_result = self._skill_runner.run(skill_name.strip(), args)
+        except Exception as exc:
+            return ToolResult(
+                ok=False,
+                output={"error": "skill_failed", "message": self._output("run_skill", str(exc))},
+            )
+        return ToolResult(
+            ok=run_result.completed,
+            output={
+                "skill": run_result.skill,
+                "steps_run": run_result.steps_run,
+                "completed": run_result.completed,
+                "stopped_reason": run_result.stopped_reason,
+                "last_output": run_result.last_output,
             },
         )
 
