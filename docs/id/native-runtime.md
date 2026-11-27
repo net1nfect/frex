@@ -95,5 +95,30 @@ loop berakhir.
 - `submit_result` wajib: loop tidak menerima jawaban akhir berupa prosa.
 - Scope checking pluggable; kebijakan operasi nyata didefinisikan di
   Fase 4.
-- Belum diverifikasi end-to-end melawan model sungguhan — semua test
-  memakai provider fake/scripted.
+- Container E2E di CI masih opt-in (`FREX_E2E=1`); live run di atas
+  dijalankan manual.
+
+## Verifikasi live (2026-11-27)
+
+Native explore dijalankan end-to-end lewat gateway OpenAI-compatible
+9router dengan model open-weight `oc/hy4-flash-free`, container
+`python:3.12-slim`, dan `network_mode: host`. Tidak ada provider fake di
+jalur ini.
+
+Hasil proyek `proj_001`, intent `i001`:
+
+- `run_006` (`explore`/`execute`) sukses dalam 2 langkah, 6577 token
+  masuk dan 105 token keluar, biaya 0 (model gratis).
+- Model memanggil `run_command` (`echo FREX_LIVE_OK`) lalu
+  `submit_result`; output container menjadi fakta `f001` =
+  `FREX_LIVE_OK` dengan `created_by_run=run_006`.
+- Intent `i001` dikonklusikan ke `f001`; status fakta tetap
+  `hypothesis` sampai ada verifikasi terpisah.
+- Urutan event: `task.started` → `tool.started` → `tool.output` →
+  `tool.started` → `tool.output` → `task.finished`.
+
+Live run ini menemukan dua bug yang tidak tertangkap unit test dan sudah
+diperbaiki: urutan argumen registry/project di scheduler, dan wire format
+tool call/result yang ditolak gateway. Yang belum diverifikasi: vLLM atau
+Ollama self-hosted secara langsung, dan container E2E di CI (opt-in
+`FREX_E2E=1`).

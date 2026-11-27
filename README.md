@@ -122,9 +122,9 @@ attribution — not benchmark results for Frex.
 
 > The system had never been tested before the competition. The full pipeline came online for the first time at 4 AM on race day. No training, no tuning, no domain-specific tooling. Zero MCP tools, zero RAG, zero predefined agent roles.
 
-## Status (v0.3)
+## Status (v0.4)
 
-Frex v0.3 is a realtime red teaming engine. What is in the tree today
+Frex v0.4 is a realtime red teaming engine. What is in the tree today
 (each verifiable in the repo, not narrative):
 
 - **Evidence & verification** — facts carry kind/status/confidence;
@@ -142,9 +142,16 @@ Frex v0.3 is a realtime red teaming engine. What is in the tree today
 - **Benchmark harness** — `bench/` runs lab scenarios and compares
   models on time-to-goal, verified facts, and cost.
 
-Not yet: verified end-to-end runs against a live self-hosted model
-(requires vLLM/Ollama or an OpenAI-compatible gateway in the loop) and
-container E2E in CI. Claims beyond this list should not be assumed.
+Verified live on 2026-11-27: native explore ran through an
+OpenAI-compatible gateway (9router) routed to the open-weight model
+`oc/hy4-flash-free`. The model executed `echo FREX_LIVE_OK` in a
+`python:3.12-slim` container, completed in 2 steps (6577 tokens in, 105
+out), and concluded fact `f001` with `run_006`. Details and the exact
+event sequence are in `docs/en/native-runtime.md#verifikasi-live-2026-11-27`.
+
+Not yet: self-hosted vLLM/Ollama directly in the loop, and container E2E
+in CI (the test is opt-in via `FREX_E2E=1`). Claims beyond this list
+should not be assumed.
 
 ## Documentation
 
@@ -171,7 +178,7 @@ English docs in `docs/en/`, Indonesian versions in `docs/id/`; ADRs in
 Both setup methods require the worker container image:
  
 ```bash
-docker pull --platform=linux/amd64 ghcr.io/oritera/frex-worker-container:latest
+docker pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest
 ```
  
 ### Docker Compose (recommended)
