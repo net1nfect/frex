@@ -322,4 +322,4 @@ def test_native_explore_enforces_scope(monkeypatch):
     tool_message = next(
         m for m in RecordingProvider.calls[1] if m.get("role") == "tool"
     )
-    assert tool_message["content"]["error"] == "scope"
+    assert json.loads(tool_message["content"])["error"] == "scope"

@@ -7,6 +7,7 @@ task without cancelling it.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -138,12 +139,24 @@ class AgentLoop:
             )
 
             if completion.tool_calls:
+                # OpenAI wire format: assistant tool calls are
+                # {id, type: function, function: {name, arguments}} and
+                # every message content is a string. Strict upstreams
+                # (including OpenAI-compatible gateways) reject the
+                # flat {id, name, arguments} shape and null content.
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": completion.text,
+                        "content": completion.text or "",
                         "tool_calls": [
-                            {"id": c.id, "name": c.name, "arguments": c.arguments}
+                            {
+                                "id": c.id,
+                                "type": "function",
+                                "function": {
+                                    "name": c.name,
+                                    "arguments": c.arguments,
+                                },
+                            }
                             for c in completion.tool_calls
                         ],
                     }
@@ -163,7 +176,7 @@ class AgentLoop:
                         {
                             "role": "tool",
                             "tool_call_id": call.id,
-                            "content": result.output,
+                            "content": json.dumps(result.output, ensure_ascii=False),
                         }
                     )
                     if result.terminal:

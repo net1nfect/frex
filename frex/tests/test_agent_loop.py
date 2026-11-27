@@ -122,7 +122,7 @@ def test_loop_rejects_invalid_tool_arguments():
     outcome = AgentLoop(make_context(provider, ToolExecutor(FakeContainers(), "c"))).run("x")
     assert outcome.status == "completed"
     tool_message = next(m for m in provider.calls[1] if m.get("role") == "tool")
-    assert tool_message["content"]["error"] == "invalid_arguments"
+    assert json.loads(tool_message["content"])["error"] == "invalid_arguments"
 
 
 def test_loop_unknown_tool_feeds_error_back():
@@ -135,7 +135,7 @@ def test_loop_unknown_tool_feeds_error_back():
     outcome = AgentLoop(make_context(provider, ToolExecutor(FakeContainers(), "c"))).run("x")
     assert outcome.status == "completed"
     tool_message = next(m for m in provider.calls[1] if m.get("role") == "tool")
-    assert tool_message["content"]["error"] == "unknown_tool"
+    assert json.loads(tool_message["content"])["error"] == "unknown_tool"
 
 
 def test_loop_scope_checker_blocks_calls():
@@ -154,7 +154,7 @@ def test_loop_scope_checker_blocks_calls():
     outcome = AgentLoop(make_context(provider, executor)).run("x")
     assert outcome.status == "completed"
     tool_message = next(m for m in provider.calls[1] if m.get("role") == "tool")
-    assert tool_message["content"]["error"] == "scope"
+    assert json.loads(tool_message["content"])["error"] == "scope"
 
 
 def test_loop_max_steps_budget():
@@ -361,3 +361,41 @@ def test_loop_degrades_gracefully_when_adapter_lacks_stream():
         make_context(provider, ToolExecutor(FakeContainers(), "c"), stream_tokens=True)
     ).run("x")
     assert outcome.status == "completed"
+
+
+def test_tool_history_uses_openai_wire_format():
+    """Assistant/tool messages must survive strict OpenAI-compatible servers.
+
+    A gateway rejected `messages.3.content: Invalid input` because tool
+    results were sent as JSON objects instead of strings. The assistant
+    tool-call shape was also the non-standard flat {id, name, arguments}.
+    """
+    provider = ScriptedProvider(
+        [
+            completion_with_tools(
+                ("run_command", {"command": "echo ok"}),
+                ("run_command", {"command": "echo two"}),
+            ),
+            completion_with_tools(("submit_result", {"result": {"ok": True}})),
+        ]
+    )
+    containers = FakeContainers([(0, "ok", ""), (0, "two", "")])
+    executor = ToolExecutor(containers, "ctr")
+
+    AgentLoop(make_context(provider, executor)).run("go")
+
+    follow_up = provider.calls[1]
+    assistant = next(m for m in follow_up if m["role"] == "assistant")
+    assert assistant["content"] == ""
+    assert all(call["type"] == "function" for call in assistant["tool_calls"])
+    assert assistant["tool_calls"][0]["function"]["name"] == "run_command"
+    assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {
+        "command": "echo ok"
+    }
+
+    tool_messages = [m for m in follow_up if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    for message in tool_messages:
+        assert isinstance(message["content"], str)
+        payload = json.loads(message["content"])
+        assert payload["exit_code"] == 0
