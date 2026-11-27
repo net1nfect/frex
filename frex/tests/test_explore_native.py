@@ -216,7 +216,7 @@ def test_native_explore_completes_and_concludes_with_run_id(monkeypatch):
     loop_run = client.runs[-1]
     assert loop_run["tokens_in"] == 250
     assert loop_run["tokens_out"] == 50
-    assert loop_run["phase"] == "explore_execute"
+    assert loop_run["phase"] == "execute"
     assert loop_run["model"] == "qwen-local"
     # conclude cites the loop run and carries the submitted description
     assert len(client.concludes) == 1

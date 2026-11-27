@@ -148,7 +148,7 @@ def run_native_explore_task(
         run_id = usage_run.record(
             _outcome_as_result(outcome),
             duration_ms=outcome.wall_ms,
-            phase="explore_execute",
+            phase="execute",
             tokens_in=outcome.tokens_in,
             tokens_out=outcome.tokens_out,
             cost_usd=round(outcome.cost_usd, 6),
