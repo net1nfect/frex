@@ -56,6 +56,8 @@ class Provider(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         timeout_seconds: int = 120,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> Completion: ...
 
     def healthcheck(self, model: str) -> bool: ...

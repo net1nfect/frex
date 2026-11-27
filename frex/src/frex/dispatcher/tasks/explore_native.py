@@ -127,6 +127,8 @@ def run_native_explore_task(
             hint_fetcher=lambda: client.consume_hint_queue(project_id),
             cost_estimator=cost_estimator,
             on_event=publisher.emit,
+            max_tokens=model_config.max_tokens,
+            temperature=model_config.temperature,
             stream_tokens=True,
         )
         outcome = AgentLoop(context).run(

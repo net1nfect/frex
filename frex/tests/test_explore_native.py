@@ -77,7 +77,7 @@ class ScriptedProvider:
     def __init__(self, script):
         self.script = list(script)
 
-    def complete(self, model, messages, *, tools=None, timeout_seconds=120):
+    def complete(self, model, messages, *, tools=None, timeout_seconds=120, **kwargs):
         item = self.script.pop(0)
         return item
 

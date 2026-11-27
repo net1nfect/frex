@@ -21,12 +21,15 @@ from frex.dispatcher.providers import (
 
 
 class _Handler(BaseHTTPRequestHandler):
+    last_body = None
+
     def log_message(self, *args):  # silence test output
         pass
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
+        type(self).last_body = body
         if self.path.endswith("/chat/completions"):
             if body.get("model") == "dead-model":
                 self.send_response(503)
@@ -77,6 +80,19 @@ def make_registry(provider_url, routing=None):
         routing=routing or {"reason": ["fast"]},
     )
     return ProviderRegistry(config)
+
+
+def test_provider_forwards_generation_params(provider_server):
+    provider = OpenAICompatProvider("local", provider_server)
+    completion = provider.complete(
+        "qwen-local",
+        [{"role": "user", "content": "hi"}],
+        max_tokens=123,
+        temperature=0.7,
+    )
+    assert completion.text == "pong"
+    assert _Handler.last_body["max_tokens"] == 123
+    assert _Handler.last_body["temperature"] == 0.7
 
 
 def test_registry_resolves_healthy_model(provider_server):

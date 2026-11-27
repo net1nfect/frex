@@ -109,6 +109,9 @@ Hasil proyek `proj_001`, intent `i001`:
 
 - `run_006` (`explore`/`execute`) sukses dalam 2 langkah, 6577 token
   masuk dan 105 token keluar, biaya 0 (model gratis).
+- Run ulang dengan `max_tokens`/`temperature` aktif (proyek `proj_002`)
+  juga sukses: `run_002`, 2 langkah, 2612 token masuk, 116 token keluar,
+  fakta `f001` = `FREX_LIVE_OK_2`.
 - Model memanggil `run_command` (`echo FREX_LIVE_OK`) lalu
   `submit_result`; output container menjadi fakta `f001` =
   `FREX_LIVE_OK` dengan `created_by_run=run_006`.

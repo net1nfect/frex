@@ -21,9 +21,11 @@ class ScriptedProvider:
     def __init__(self, script):
         self.script = list(script)
         self.calls: list[list[dict]] = []
+        self.kwargs: list[dict] = []
 
-    def complete(self, model, messages, *, tools=None, timeout_seconds=120):
+    def complete(self, model, messages, *, tools=None, timeout_seconds=120, **kwargs):
         self.calls.append([dict(m) for m in messages])
+        self.kwargs.append(kwargs)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -336,10 +338,14 @@ def test_loop_streams_tokens_when_enabled():
             provider,
             ToolExecutor(FakeContainers(), "c"),
             stream_tokens=True,
+            max_tokens=512,
+            temperature=0.7,
             on_event=lambda k, d: events.append((k, d)),
         )
     ).run("x")
     assert outcome.status == "completed"
+    assert provider.kwargs[0].get("max_tokens") == 512
+    assert provider.kwargs[0].get("temperature") == 0.7
     assert provider.kwargs[0].get("stream") is True
     assert callable(provider.kwargs[0].get("on_token"))
     # on_token emits token.delta events through on_event.
@@ -351,8 +357,15 @@ def test_loop_streams_tokens_when_enabled():
 
 def test_loop_degrades_gracefully_when_adapter_lacks_stream():
     class LegacyProvider(ScriptedProvider):
-        def complete(self, model, messages, *, tools=None, timeout_seconds=120):
-            return super().complete(model, messages, tools=tools, timeout_seconds=timeout_seconds)
+        def complete(self, model, messages, *, tools=None, timeout_seconds=120, max_tokens=None, temperature=None):
+            return super().complete(
+                model,
+                messages,
+                tools=tools,
+                timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
 
     provider = LegacyProvider(
         [completion_with_tools(("submit_result", {"result": {"ok": 1}}))]

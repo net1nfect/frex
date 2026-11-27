@@ -54,6 +54,10 @@ class AgentContext:
     # Per-step cost estimator: (tokens_in, tokens_out) -> usd.
     cost_estimator: Callable[[int, int], float] = lambda ti, to: 0.0
     on_event: Callable[[str, dict[str, Any]], None] = lambda kind, data: None
+    # Generation parameters from ModelConfig. None means "let the
+    # provider decide"; the native task passes the configured values.
+    max_tokens: int | None = None
+    temperature: float | None = None
     # stream_tokens: stream completions and emit token.delta events as
     # they arrive. The provider adapter must support stream=True.
     stream_tokens: bool = False
@@ -106,6 +110,8 @@ class AgentLoop:
                         self.ctx.model,
                         messages,
                         tools=TOOLS_SPEC,
+                        max_tokens=self.ctx.max_tokens,
+                        temperature=self.ctx.temperature,
                         stream=True,
                         on_token=lambda delta: self.ctx.on_event(
                             "token.delta", {"text": delta}
@@ -116,6 +122,8 @@ class AgentLoop:
                         self.ctx.model,
                         messages,
                         tools=TOOLS_SPEC,
+                        max_tokens=self.ctx.max_tokens,
+                        temperature=self.ctx.temperature,
                     )
             except TypeError as exc:
                 # Covers adapters that predate stream=; degrade to
@@ -127,6 +135,8 @@ class AgentLoop:
                     self.ctx.model,
                     messages,
                     tools=TOOLS_SPEC,
+                    max_tokens=self.ctx.max_tokens,
+                    temperature=self.ctx.temperature,
                 )
             except ProviderError as exc:
                 self.ctx.on_event("error", {"message": str(exc)})

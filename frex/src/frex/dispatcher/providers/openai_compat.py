@@ -77,6 +77,8 @@ class OpenAICompatProvider:
         *,
         tools: list[dict[str, Any]] | None = None,
         timeout_seconds: int = 120,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
         stream: bool = False,
         on_token=None,
     ) -> Completion:
@@ -85,6 +87,10 @@ class OpenAICompatProvider:
             payload["tools"] = [
                 {"type": "function", "function": tool} for tool in tools
             ]
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
         if stream:
             return self._complete_streaming(
                 model, payload, timeout_seconds, on_token
