@@ -1,129 +1,133 @@
 # Native agent runtime
 
-Native runtime menggantikan CLI bridge untuk task `explore`: dispatcher
-berbicara langsung dengan API model dan model memakai tools di dalam
-container. CLI bridge tetap default.
+The native runtime replaces the CLI bridge for `explore` tasks: the
+dispatcher talks to the model API directly and the model uses tools
+inside the container. The CLI bridge remains the default.
 
-## Konfigurasi
+## Configuration
 
 ```yaml
 tasks:
   explore:
     timeout: 600
     conclude_timeout: 120
-    native: true          # aktifkan agent loop
+    native: true          # enable the agent loop
 
 providers:
   - name: local-vllm
     type: openai_compat
     base_url: http://vllm.internal:8000/v1
-    # api_key: ...        # opsional
+    # api_key: ...        # optional
 
 models:
   - name: fast
     provider: local-vllm
-    model: Qwen/Qwen3-32B          # id model native provider
+    model: Qwen/Qwen3-32B          # provider-native model id
     max_tokens: 4096
     temperature: 0.4
-    input_cost_per_mtok: 0.0       # USD per juta token; self-hosted = 0
+    input_cost_per_mtok: 0.0       # USD per million tokens; self-hosted = 0
     output_cost_per_mtok: 0.0
 
 routing:
-  explore: [fast]        # chain; model pertama yang healthy menang
+  explore: [fast]        # chain; first healthy model wins
 ```
 
-Tanpa `native: true` (atau tanpa providers/models/routing) perilaku
-lama tidak berubah — registry provider dibangun lazily dan bridge
-dipakai.
+Without `native: true` (or without providers/models/routing) the old
+behavior is unchanged — the provider registry is built lazily and the
+bridge is used.
 
-## Alur
+## Flow
 
-1. Scheduler memilih worker, klaim intent, lalu `run_native_explore_task`.
-2. `ProviderRegistry.resolve("explore")` memilih model dari routing chain.
-3. Healthcheck container tetap dijalankan (tercatat sebagai run).
-4. `AgentLoop` berjalan: model memanggil tools
-   (`run_command`, `read_file`, `write_file`, `http_request`,
-   `submit_result`) yang dieksekusi di container proyek.
-5. Steering hint dari `POST /projects/{id}/hint-queue` disuntik antar
-   langkah (konsumsi atomik, tidak pernah dua kali).
-6. Event (`task.started`, `tool.started`, `tool.output`,
-   `steering.received`, `task.finished`, `error`) di-buffer
-   `EventPublisher` dan dikirim batch ke `POST /projects/{id}/events`;
-   UI berlangganan `/events/stream` (SSE).
-7. Satu baris `task_runs` merangkum loop dengan `tokens_in`,
-   `tokens_out`, `cost_usd`; conclude mengutip `run_id` tersebut sehingga
-   rantai evidence tetap utuh.
+1. The scheduler picks a worker, claims the intent, then calls
+   `run_native_explore_task`.
+2. `ProviderRegistry.resolve("explore")` picks a model from the routing
+   chain.
+3. The container healthcheck still runs (recorded as a run).
+4. `AgentLoop` runs: the model calls tools (`run_command`, `read_file`,
+   `write_file`, `http_request`, `submit_result`) executed in the
+   project container.
+5. Steering hints from `POST /projects/{id}/hint-queue` are injected
+   between steps (atomic consumption, never twice).
+6. Events (`task.started`, `tool.started`, `tool.output`,
+   `steering.received`, `task.finished`, `error`) are buffered by
+   `EventPublisher` and sent in batches to `POST /projects/{id}/events`;
+   the UI subscribes to `/events/stream` (SSE).
+7. One `task_runs` row summarizes the loop with `tokens_in`,
+   `tokens_out`, `cost_usd`; conclude cites that `run_id` so the
+   evidence chain stays intact.
 
 ## Budget
 
-`AgentBudget` (default): 30 langkah, 200k token, $5, 30 menit wall
-clock. `tasks.explore.timeout` menjadi `max_wall_seconds`. Jawaban prosa
-(panggilan `submit_result` tidak dilakukan) mendapat satu nudge, lalu
-loop berakhir.
+`AgentBudget` (default): 30 steps, 200k tokens, $5, 30 minutes wall
+clock. `tasks.explore.timeout` becomes `max_wall_seconds`. A prose
+answer (no `submit_result` call) gets one nudge, then the loop ends.
 
-## Endpoint terkait
+## Related endpoints
 
 - `POST /projects/{id}/hint-queue` — enqueue steering (ephemeral).
-- `GET  /projects/{id}/hint-queue` — konsumsi hint pending.
-- `POST /projects/{id}/events` — batch event dari dispatcher.
-- `GET  /projects/{id}/events?since=N` — polling dengan cursor.
-- `GET  /projects/{id}/events/stream` — SSE dengan heartbeat.
-- `GET  /projects/{id}/usage` — rollup token & biaya per task type.
+- `GET  /projects/{id}/hint-queue` — consume pending hints.
+- `POST /projects/{id}/events` — batch events from the dispatcher.
+- `GET  /projects/{id}/events?since=N` — cursor polling.
+- `GET  /projects/{id}/events/stream` — SSE with heartbeat.
+- `GET  /projects/{id}/usage` — token and cost rollup per task type.
 
-## Batasan MVP
+## MVP limitations
 
-- Interactive sessions (reverse shell, SSH) belum didukung tool.
-- `submit_result` wajib: loop tidak menerima jawaban akhir berupa prosa.
-- Scope checking pluggable; kebijakan operasi nyata didefinisikan di
-  Fase 4.
+- Interactive sessions (reverse shell, SSH) are not supported by tools
+  yet.
+- `submit_result` is required: the loop does not accept a prose final
+  answer.
+- Scope checking is pluggable; real operational policy is defined in
+  Phase 4.
 
-## Operasi (v0.3.3-ops)
+## Operations (v0.3.3-ops)
 
-- **Scope**: proyek punya `scope` (domains, cidrs, exclusions). Tool
-  call di luar scope ditolak kembali ke model, bukan dieksekusi.
+- **Scope**: projects have a `scope` (domains, cidrs, exclusions). Tool
+  calls outside scope are rejected back to the model, not executed.
   `PUT /projects/{id}/scope`.
-- **Risk & approval**: intent dengan `risk_class` high/critical
-  menunggu `POST /intents/{id}/approve` sebelum dispatcher menjalankannya;
-  `/reject` mencatat penolakan untuk audit.
-- **Budget**: `budget` proyek (max_usd, max_tokens, max_tool_calls,
-  deadline) menghentikan dispatch baru saat tercapai; task berjalan
-  tetap selesai.
-- **Resource locks**: `POST /projects/{id}/locks/acquire` — kepemilikan
-  eksklusif target berisiko dengan TTL; lock kadaluarsa direklaim otomatis.
-- **Secrets**: kredensial tersimpan terenkripsi (FREX_SECRET_KEY);
-  fakta mengutip `secret://name`. Nilai hanya lewat
-  `GET /secrets/{name}?reveal=1` dengan auth aktif.
-- **Ingest**: `frex ingest --type nmap|nuclei --file <output>` mengisi
-  graf dari output tool tanpa LLM (fakta lahir terverifikasi).
+- **Risk & approval**: intents with `risk_class` high/critical wait for
+  `POST /intents/{id}/approve` before the dispatcher runs them;
+  `/reject` records the rejection for audit.
+- **Budget**: project `budget` (max_usd, max_tokens, max_tool_calls,
+  deadline) stops new dispatches once reached; running tasks still
+  finish.
+- **Resource locks**: `POST /projects/{id}/locks/acquire` — exclusive
+  ownership of a risky target with a TTL; expired locks are reclaimed
+  automatically.
+- **Secrets**: credentials are stored encrypted (FREX_SECRET_KEY);
+  facts cite `secret://name`. Values are only available via
+  `GET /secrets/{name}?reveal=1` with auth enabled.
+- **Ingest**: `frex ingest --type nmap|nuclei --file <output>` fills
+  the graph from tool output without an LLM (facts are born verified).
 
-## Verifikasi live (2026-11-27)
+## Live verification (2026-11-27)
 
-Native explore dijalankan end-to-end lewat gateway OpenAI-compatible
-9router dengan model open-weight `oc/hy4-flash-free`, container
-`python:3.12-slim`, dan `network_mode: host`. Tidak ada provider fake di
-jalur ini.
+Native explore ran end-to-end through the 9router OpenAI-compatible
+gateway with the open-weight model `oc/hy4-flash-free`, a
+`python:3.12-slim` container, and `network_mode: host`. No fake provider
+was in this path.
 
-Hasil proyek `proj_001`, intent `i001`:
+Project `proj_001`, intent `i001`:
 
-- `run_006` (`explore`/`execute`) sukses dalam 2 langkah, 6577 token
-  masuk dan 105 token keluar, biaya 0 (model gratis).
-- Model memanggil `run_command` (`echo FREX_LIVE_OK`) lalu
-  `submit_result`; output container menjadi fakta `f001` =
-  `FREX_LIVE_OK` dengan `created_by_run=run_006`.
-- Intent `i001` dikonklusikan ke `f001`; status fakta tetap
-  `hypothesis` sampai ada verifikasi terpisah.
-- Urutan event: `task.started` → `tool.started` → `tool.output` →
+- `run_006` (`explore`/`execute`) succeeded in 2 steps, 6577 tokens in
+  and 105 out, cost 0 (free model).
+- The model called `run_command` (`echo FREX_LIVE_OK`) then
+  `submit_result`; the container output became fact `f001` =
+  `FREX_LIVE_OK` with `created_by_run=run_006`.
+- Intent `i001` concluded to `f001`; the fact status stays `hypothesis`
+  until separately verified.
+- Event order: `task.started` → `tool.started` → `tool.output` →
   `tool.started` → `tool.output` → `task.finished`.
-- Run ulang dengan `max_tokens`/`temperature` aktif (proyek `proj_002`)
-  juga sukses: `run_002`, 2 langkah, 2612 token masuk, 116 token keluar,
-  fakta `f001` = `FREX_LIVE_OK_2`.
+- A rerun with `max_tokens`/`temperature` active (project `proj_002`)
+  also succeeded: `run_002`, 2 steps, 2612 tokens in, 116 out, fact
+  `f001` = `FREX_LIVE_OK_2`.
 
-Live run ini menemukan tiga bug yang tidak tertangkap unit test dan sudah
-diperbaiki: urutan argumen registry/project di scheduler, phase
-`task_runs` yang tidak valid (422 sehingga run tidak tercatat), dan wire
-format tool call/result yang ditolak gateway. Review lanjutan menemukan
-`max_tokens`/`temperature` dari config tidak pernah dikirim; sudah
-diperbaiki dan diuji live lewat proyek `proj_002`. Container E2E dengan
-image worker upstream juga lulus lokal pada 2026-11-27 (`FREX_E2E=1`);
-CI tetap opt-in karena image berukuran 15 GB. Yang belum diverifikasi:
-vLLM atau Ollama self-hosted secara langsung.
+This live run exposed three bugs that unit tests missed, all fixed: the
+scheduler's registry/project argument order, invalid `task_runs` phases
+(422, so runs were never recorded), and the tool call/result wire format
+rejected by the gateway. A follow-up review found that
+`max_tokens`/`temperature` from config were never sent; that is fixed
+and was verified live via `proj_002`. Container E2E against the upstream
+worker image also passed locally on 2026-11-27 (`FREX_E2E=1`); CI stays
+opt-in because the image is 15 GB. Not yet verified: self-hosted vLLM or
+Ollama directly.
