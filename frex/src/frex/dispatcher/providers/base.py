@@ -47,6 +47,29 @@ class ProviderError(Exception):
     def __str__(self) -> str:
         return self.message
 
+class KeyPool:
+    """Round-robin over one provider's API keys.
+
+    A provider may hold several credentials (rate-limit spreading, per-key
+    quotas). `next()` walks the keys in order; a single key behaves
+    identically to the old fixed-credential adapters.
+    """
+
+    def __init__(self, api_key: str | None = None, api_keys: list[str] | None = None):
+        candidates = ([api_key] if api_key else []) + list(api_keys or [])
+        self._keys = list(dict.fromkeys(k for k in candidates if k))
+        self._index = 0
+
+    def next(self) -> str | None:
+        if not self._keys:
+            return None
+        key = self._keys[self._index % len(self._keys)]
+        self._index += 1
+        return key
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
 
 class Provider(Protocol):
     def complete(

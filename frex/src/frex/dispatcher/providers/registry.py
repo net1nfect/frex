@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from typing import TYPE_CHECKING, Any, Callable
 
 from frex.dispatcher.providers.anthropic import AnthropicProvider
@@ -37,7 +38,14 @@ class ProviderRegistry:
         self._models: dict[str, "ModelConfig"] = {
             m.name: m for m in (config.models or [])
         }
-        self._routing: dict[str, list[str]] = dict(config.routing or {})
+        self._routing: dict[str, list[tuple[str, int]]] = {
+            task_type: [
+                (entry if isinstance(entry, str) else entry.name,
+                 0 if isinstance(entry, str) else entry.weight)
+                for entry in chain
+            ]
+            for task_type, chain in (config.routing or {}).items()
+        }
         self._providers: dict[str, Provider] = {}
         for provider_config in config.providers or []:
             cls = PROVIDER_TYPES.get(provider_config.type)
@@ -46,13 +54,16 @@ class ProviderRegistry:
             kwargs: dict[str, Any] = {"name": provider_config.name}
             kwargs["base_url"] = provider_config.base_url
             kwargs["api_key"] = provider_config.api_key
+            kwargs["api_keys"] = list(provider_config.api_keys or [])
             self._providers[provider_config.name] = cls(**kwargs)
         self._health: dict[str, bool] = {}
+        # Weighted routing draws; injectable for deterministic tests.
+        self._rng = random.Random()
         self.validate()
 
     def validate(self) -> None:
         for task_type, chain in self._routing.items():
-            for model_name in chain:
+            for model_name, _weight in chain:
                 if model_name not in self._models:
                     raise ProviderError(
                         f"routing[{task_type}] references unknown model {model_name}"
@@ -67,12 +78,26 @@ class ProviderRegistry:
         chain = self._routing.get(task_type)
         if not chain:
             raise NoModelAvailable(f"no routing configured for task type {task_type}")
-        for model_name in chain:
-            if self.healthy(model_name):
-                return self._models[model_name]
-        raise NoModelAvailable(
-            f"all models unhealthy for task type {task_type}: {chain}"
-        )
+        healthy = [(name, weight) for name, weight in chain if self.healthy(name)]
+        if not healthy:
+            raise NoModelAvailable(
+                f"all models unhealthy for task type {task_type}: "
+                f"{[name for name, _ in chain]}"
+            )
+        # Weighted entries share the traffic; zero-weight entries are
+        # pure fallbacks and only serve when every weighted model is
+        # unhealthy. Without any weight the chain keeps the original
+        # deterministic first-healthy behaviour.
+        weighted = [(name, weight) for name, weight in healthy if weight > 0]
+        if not weighted:
+            return self._models[healthy[0][0]]
+        total = sum(weight for _, weight in weighted)
+        pick = self._rng.random() * total
+        for name, weight in weighted:
+            pick -= weight
+            if pick < 0:
+                return self._models[name]
+        return self._models[weighted[-1][0]]  # pragma: no cover - float edge
 
     def healthy(self, model_name: str) -> bool:
         cached = self._health.get(model_name)
@@ -105,7 +130,7 @@ class ProviderRegistry:
         chain = self._routing.get(task_type)
         if not chain:
             return []
-        return [self._models[name] for name in chain if name in self._models]
+        return [self._models[name] for name, _weight in chain if name in self._models]
 
     def make_failover(
         self, task_type: str, current_model_name: str

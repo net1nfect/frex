@@ -15,6 +15,7 @@ import requests
 
 from frex.dispatcher.providers.base import (
     Completion,
+    KeyPool,
     ProviderError,
     ToolCall,
     Usage,
@@ -39,13 +40,14 @@ class AnthropicProvider:
         name: str,
         base_url: str = "",
         api_key: str | None = None,
+        api_keys: list[str] | None = None,
         *,
         max_retries: int = 2,
         retry_backoff_seconds: float = 1.0,
     ):
         self.name = name
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
-        self.api_key = api_key
+        self._pool = KeyPool(api_key, api_keys)
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
 
@@ -179,8 +181,9 @@ class AnthropicProvider:
             "Content-Type": "application/json",
             "anthropic-version": ANTHROPIC_VERSION,
         }
-        if self.api_key:
-            headers["x-api-key"] = self.api_key
+        key = self._pool.next()
+        if key:
+            headers["x-api-key"] = key
 
         last_error: ProviderError | None = None
         for attempt in range(self.max_retries + 1):

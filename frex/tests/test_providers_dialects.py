@@ -210,3 +210,65 @@ def test_gemini_healthcheck_false_on_error(monkeypatch):
 
     monkeypatch.setattr(requests_module, "post", fake_post)
     assert provider.healthcheck("gemini-3.8-flash") is False
+
+def test_key_pool_rotates_round_robin():
+    from frex.dispatcher.providers.base import KeyPool
+
+    pool = KeyPool("a", ["b", "c"])
+    assert [pool.next() for _ in range(4)] == ["a", "b", "c", "a"]
+    assert KeyPool().next() is None
+    # dedup keeps a single copy of repeated keys
+    assert len(KeyPool("a", ["a", "b"])) == 2
+
+
+def test_openai_compat_key_pool_rotates(monkeypatch):
+    from frex.dispatcher.providers.openai_compat import OpenAICompatProvider
+
+    seen = []
+
+    class Response:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"pong"}}],"usage":{}}'
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append(headers["Authorization"])
+        return Response()
+
+    import requests as requests_module
+
+    monkeypatch.setattr(requests_module, "post", fake_post)
+    provider = OpenAICompatProvider("p", "http://x", api_keys=["k1", "k2"])
+    for _ in range(3):
+        provider.complete("m", [{"role": "user", "content": "x"}])
+    assert seen == ["Bearer k1", "Bearer k2", "Bearer k1"]
+
+
+def test_anthropic_key_pool_rotates(monkeypatch):
+    seen = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "content": [{"type": "text", "text": "pong"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append(headers["x-api-key"])
+        return Response()
+
+    import requests as requests_module
+
+    monkeypatch.setattr(requests_module, "post", fake_post)
+    provider = AnthropicProvider("claude", api_keys=["a", "b"])
+    for _ in range(2):
+        provider.complete("m", [{"role": "user", "content": "x"}])
+    assert seen == ["a", "b"]

@@ -15,7 +15,7 @@ from typing import Any
 
 import requests
 
-from frex.dispatcher.providers.base import Completion, ProviderError, ToolCall, Usage
+from frex.dispatcher.providers.base import Completion, KeyPool, ProviderError, ToolCall, Usage
 
 LOG = logging.getLogger(__name__)
 
@@ -28,13 +28,14 @@ class OpenAICompatProvider:
         name: str,
         base_url: str,
         api_key: str | None = None,
+        api_keys: list[str] | None = None,
         *,
         max_retries: int = 2,
         retry_backoff_seconds: float = 1.0,
     ):
         self.name = name
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self._pool = KeyPool(api_key, api_keys)
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
 
@@ -65,8 +66,9 @@ class OpenAICompatProvider:
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        key = self._pool.next()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         return headers
 
     def _parse_completion(self, body: dict[str, Any], latency_ms: int) -> Completion:

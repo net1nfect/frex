@@ -215,12 +215,28 @@ class ProviderConfig(BaseModel):
     type: Literal["openai_compat", "anthropic", "gemini"]
     base_url: str = ""
     api_key: str | None = None
+    # Credential pool: keys rotate round-robin per request, for
+    # rate-limit spreading across several accounts on one provider.
+    api_keys: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_base_url(self) -> "ProviderConfig":
         if self.type == "openai_compat" and not self.base_url:
             raise ValueError(f"provider {self.name} requires base_url")
         return self
+
+class RouteEntry(BaseModel):
+    """One weighted entry in a routing chain.
+
+    A plain string entry means weight 0 (pure fallback: only used when
+    every weighted model in the chain is unhealthy). Entries with
+    weight > 0 share the traffic proportionally at resolve time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    weight: int = Field(default=0, ge=0)
 
 
 class ModelConfig(BaseModel):
@@ -251,7 +267,7 @@ class DispatchConfig(BaseModel):
     # switches task types to native model calls.
     providers: list[ProviderConfig] = Field(default_factory=list)
     models: list[ModelConfig] = Field(default_factory=list)
-    routing: dict[str, list[str]] = Field(default_factory=dict)
+    routing: dict[str, list[str | RouteEntry]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_provider_layer(self) -> "DispatchConfig":
@@ -270,7 +286,11 @@ class DispatchConfig(BaseModel):
         for task_type, chain in self.routing.items():
             if not chain:
                 raise ValueError(f"routing[{task_type}] must not be empty")
-            unknown = [m for m in chain if m not in known]
+            unknown = [
+                entry if isinstance(entry, str) else entry.name
+                for entry in chain
+                if (entry if isinstance(entry, str) else entry.name) not in known
+            ]
             if unknown:
                 raise ValueError(
                     f"routing[{task_type}] references unknown models: {', '.join(unknown)}"

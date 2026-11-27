@@ -320,3 +320,40 @@ def test_registry_make_failover_unknown_start_starts_at_head(provider_server):
     registry = make_registry(provider_server)
     failover = registry.make_failover("reason", "nonexistent")
     assert failover() is None  # single-entry chain, nothing after head
+
+def test_weighted_routing_distributes(provider_server):
+    from frex.dispatcher.config import RouteEntry
+
+    config = DispatchConfig.model_construct(
+        providers=[ProviderConfig(name="local", type="openai_compat", base_url=provider_server)],
+        models=[
+            ModelConfig(name="heavy", provider="local", model="qwen-local"),
+            ModelConfig(name="light", provider="local", model="qwen-local"),
+            ModelConfig(name="fallback", provider="local", model="dead-model"),
+        ],
+        routing={
+            "explore": [
+                RouteEntry(name="heavy", weight=3),
+                RouteEntry(name="light", weight=1),
+                "fallback",
+            ]
+        },
+    )
+    registry = ProviderRegistry(config)
+    registry._rng.seed(1234)
+    picks = {"heavy": 0, "light": 0}
+    for _ in range(400):
+        picks[registry.resolve("explore").name] += 1
+    # Weighted models share traffic roughly 3:1; the zero-weight
+    # fallback never serves while weighted models are healthy.
+    assert picks.get("fallback", 0) == 0
+    assert picks["heavy"] > picks["light"] * 2
+    # Make both weighted models unhealthy: the fallback serves.
+    registry._health = {"heavy": False, "light": False, "fallback": True}
+    assert registry.resolve("explore").name == "fallback"
+
+
+def test_weighted_routing_keeps_first_healthy_without_weights(provider_server):
+    registry = make_registry(provider_server, routing={"reason": ["fast", "dead"]})
+    registry._rng.seed(7)
+    assert all(registry.resolve("reason").name == "fast" for _ in range(50))
