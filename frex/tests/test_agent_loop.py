@@ -463,3 +463,151 @@ def test_failover_event_emitted():
     )
     AgentLoop(context).run("do it")
     assert ("model.failover", {"model": "backup-model"}) in events
+
+
+# ---------------------------------------------------- context layering
+
+
+def _tool_completion(call_id, name, arguments):
+    return Completion(
+        text=None,
+        tool_calls=[ToolCall(id=call_id, name=name, arguments=json.dumps(arguments))],
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+
+
+def _submit_completion(description="done"):
+    return Completion(
+        text=None,
+        tool_calls=[
+            ToolCall(
+                id="s1",
+                name="submit_result",
+                arguments=json.dumps({"result": {"description": description}}),
+            )
+        ],
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+
+
+def _loop_context(provider, **overrides):
+    defaults = dict(
+        provider=provider,
+        model="m",
+        executor=ToolExecutor(FakeContainers(), "ctr"),
+        budget=AgentBudget(max_steps=10),
+    )
+    defaults.update(overrides)
+    return AgentContext(**defaults)
+
+
+def test_system_prompt_prepended_once():
+    provider = ScriptedProvider([_submit_completion()])
+    loop = AgentLoop(
+        _loop_context(provider, system_prompt="<role>recon</role>")
+    )
+    outcome = loop.run("do the thing")
+    assert outcome.status == "completed"
+    first = provider.calls[0][0]
+    assert first["role"] == "system"
+    assert first["content"] == "<role>recon</role>"
+    # Only one system message across turns.
+    assert sum(1 for m in provider.calls[0] if m["role"] == "system") == 1
+
+
+def test_state_summary_injected_every_interval():
+    summaries = ["facts: 3 total"]
+
+    def provider_fn():
+        return summaries[0]
+
+    provider = ScriptedProvider(
+        [_tool_completion("t1", "run_command", {"command": "id"}), _submit_completion()]
+    )
+    loop = AgentLoop(
+        _loop_context(
+            provider,
+            state_summary_provider=provider_fn,
+            state_summary_interval=2,
+        )
+    )
+    outcome = loop.run("go")
+    assert outcome.status == "completed"
+    # Injected once, before the second model call.
+    second_call = provider.calls[1]
+    assert any(
+        m["role"] == "user" and m["content"].startswith("[state] facts: 3")
+        for m in second_call
+    )
+
+
+def test_old_tool_output_collapses_to_summary():
+    script = [
+        _tool_completion(f"t{i}", "run_command", {"command": f"cmd{i}"})
+        for i in range(9)
+    ]
+    script.append(_submit_completion())
+    provider = ScriptedProvider(script)
+    loop = AgentLoop(_loop_context(provider, recent_window=3))
+    outcome = loop.run("go")
+    assert outcome.status == "completed"
+    final = provider.calls[-1]
+    tool_messages = [m for m in final if m["role"] == "tool"]
+    raw = [m for m in tool_messages if not m["content"].startswith("[summary]")]
+    summarized = [m for m in tool_messages if m["content"].startswith("[summary]")]
+    assert len(raw) == 3
+    assert len(summarized) == 6
+
+
+def test_reasoning_effort_follows_schedule():
+    seen_efforts = []
+
+    class EffortProvider(ScriptedProvider):
+        def complete(self, model, messages, *, tools=None, timeout_seconds=120, **kwargs):
+            if "reasoning_effort" in kwargs:
+                seen_efforts.append(kwargs["reasoning_effort"])
+            return super().complete(model, messages, tools=tools, timeout_seconds=timeout_seconds, **kwargs)
+
+    provider = EffortProvider(
+        [_tool_completion("t1", "run_command", {"command": "x"}), _submit_completion()]
+    )
+    loop = AgentLoop(
+        _loop_context(provider, effort_schedule=lambda step: "low" if step <= 1 else "medium")
+    )
+    outcome = loop.run("go")
+    assert outcome.status == "completed"
+    assert seen_efforts == ["low", "medium"]
+
+
+def test_no_effort_param_without_schedule():
+    provider = ScriptedProvider([_submit_completion()])
+    loop = AgentLoop(_loop_context(provider))
+    outcome = loop.run("go")
+    assert outcome.status == "completed"
+    assert "reasoning_effort" not in provider.kwargs[0]
+
+
+def test_scope_rejection_emits_audit_event():
+    events = []
+    from frex.dispatcher.runtime.scope import Scope
+
+    executor = ToolExecutor(
+        FakeContainers(),
+        "ctr",
+        scope_checker=Scope(domains=["lab.test"]).checker(),
+    )
+    provider = ScriptedProvider(
+        [
+            _tool_completion("t1", "http_request", {"url": "http://evil.test/"}),
+            _submit_completion(),
+        ]
+    )
+    loop = AgentLoop(
+        _loop_context(provider, executor=executor, on_event=lambda k, d: events.append((k, d)))
+    )
+    outcome = loop.run("go")
+    assert outcome.status == "completed"
+    assert any(
+        k == "error" and d.get("message") == "scope rejected http_request"
+        for k, d in events
+    )

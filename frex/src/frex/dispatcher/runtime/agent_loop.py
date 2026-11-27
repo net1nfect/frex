@@ -71,6 +71,23 @@ class AgentContext:
     # deployments with a restricted tool surface pass a filtered spec
     # so the model never sees disabled tools.
     tools_spec: list[dict[str, Any]] | None = None
+    # --- Context layering -------------------------------------------------
+    # Fixed system prompt (role/scope/stop conditions); prepended once.
+    system_prompt: str | None = None
+    # State-summary layer: returns a condensed fact-graph view,
+    # regenerated every state_summary_interval turns (not accumulated).
+    state_summary_provider: Callable[[], str] | None = None
+    state_summary_interval: int = 5
+    # Sliding window: only the last N tool messages stay raw; older ones
+    # collapse to one line. Raw output is disposable — the fact graph is
+    # the source of truth and get_fact_detail retrieves details.
+    recent_window: int = 6
+    # --- Reasoning effort mapping -----------------------------------------
+    # Maps step number -> provider reasoning effort. Deterministic
+    # routing steps get low; triage/severity steps get medium/high.
+    # None entries omit the parameter entirely. Providers that do not
+    # support reasoning_effort degrade gracefully (TypeError catch).
+    effort_schedule: Callable[[int], str | None] | None = None
 
 
 class AgentLoop:
@@ -82,7 +99,11 @@ class AgentLoop:
 
     def run(self, task_prompt: str) -> AgentOutcome:
         started = time.perf_counter()
-        messages: list[dict[str, Any]] = [{"role": "user", "content": task_prompt}]
+        messages: list[dict[str, Any]] = []
+        if self.ctx.system_prompt:
+            # Layer 1: fixed, cacheable between turns.
+            messages.append({"role": "system", "content": self.ctx.system_prompt})
+        messages.append({"role": "user", "content": task_prompt})
         outcome = AgentOutcome(status="failed")
 
         def finish(status: str, **kwargs: Any) -> AgentOutcome:
@@ -115,6 +136,20 @@ class AgentLoop:
                 messages.append({"role": "user", "content": f"[steering] {hint}"})
                 self.ctx.on_event("steering.received", {"hint": hint})
 
+            # Layer 2: regenerated state summary every N turns — a
+            # condensed fact-graph view, not an accumulating dump.
+            if (
+                self.ctx.state_summary_provider is not None
+                and step_count > 1
+                and step_count % self.ctx.state_summary_interval == 0
+            ):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "[state] " + self.ctx.state_summary_provider(),
+                    }
+                )
+
             # Only send generation params that are configured, so an
             # adapter with the older signature keeps working when the
             # caller did not set them.
@@ -123,6 +158,10 @@ class AgentLoop:
                 generation["max_tokens"] = self.ctx.max_tokens
             if self.ctx.temperature is not None:
                 generation["temperature"] = self.ctx.temperature
+            if self.ctx.effort_schedule is not None:
+                effort = self.ctx.effort_schedule(step_count)
+                if effort is not None:
+                    generation["reasoning_effort"] = effort
 
             try:
                 if self.ctx.stream_tokens:
@@ -207,6 +246,17 @@ class AgentLoop:
                     )
                     tool_calls += 1
                     self.ctx.on_event("tool.output", {"tool": call.name, "ok": result.ok})
+                    if result.output.get("error") == "scope":
+                        # Rejected actions are part of the audit trail:
+                        # what was attempted, against what, and when.
+                        self.ctx.on_event(
+                            "error",
+                            {
+                                "message": f"scope rejected {call.name}",
+                                "tool": call.name,
+                                "arguments": call.arguments[:500],
+                            },
+                        )
                     messages.append(
                         {
                             "role": "tool",
@@ -214,6 +264,7 @@ class AgentLoop:
                             "content": json.dumps(result.output, ensure_ascii=False),
                         }
                     )
+                    self._window_messages(messages)
                     if result.terminal:
                         return finish(
                             "completed", result=result.output.get("result")
@@ -234,3 +285,27 @@ class AgentLoop:
                 return finish("failed", error="model returned empty response")
 
         return finish("budget_exhausted", error="max_steps reached")
+
+    def _window_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Collapse older raw tool outputs to one-line summaries.
+
+        Keeps the last recent_window tool messages verbatim; each older
+        one becomes '[summary] tool <name> ok/error' — the fact graph
+        holds the substance, get_fact_detail retrieves it on demand.
+        """
+        window = self.ctx.recent_window
+        if window <= 0:
+            return
+        tool_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "tool" and not str(m.get("content", "")).startswith("[summary]")
+        ]
+        for i in tool_indices[:-window]:
+            content = messages[i].get("content", "")
+            try:
+                output = json.loads(content)
+                name = output.get("tool") or output.get("error") or "result"
+                ok = "ok" if output.get("ok", True) else "error"
+            except ValueError:
+                name, ok = "result", "?"
+            messages[i]["content"] = f"[summary] tool {name} {ok}"

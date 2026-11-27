@@ -162,6 +162,12 @@ def run_native_explore_task(
             posted, _failed = post_facts(client, project_id, [ingested])
             return posted
 
+        def fact_lookup(fact_id: str) -> dict[str, Any] | None:
+            try:
+                return client.get_fact(project_id, fact_id)
+            except Exception:
+                return None
+
         executor = ToolExecutor(
             container_manager,
             container_name,
@@ -172,10 +178,48 @@ def run_native_explore_task(
             host_filter=scope.host_filter() if scope else None,
             interactsh_factory=make_interactsh,
             action_log_sink=record_action_log,
+            facts_lookup=fact_lookup,
         )
         tools_spec = TOOLS_SPEC
         if enabled_set is not None:
             tools_spec = [tool for tool in TOOLS_SPEC if tool["name"] in enabled_set]
+        # Context layering: fixed system prompt + regenerated state
+        # summary + on-demand fact retrieval. Raw tool output stays in
+        # a sliding window; the fact graph is the source of truth.
+        from frex.dispatcher.runtime.prompts import (
+            build_system_prompt,
+            condense_facts,
+        )
+
+        system_prompt = build_system_prompt(
+            role_text=(
+                "You are a recon agent for an authorized security "
+                "assessment. Investigate the intent using the tools, "
+                "record concrete discoveries, and report when done."
+            ),
+            scope=scope,
+            stop_conditions={"max_steps": budget.max_steps},
+        )
+
+        def state_summary() -> str:
+            try:
+                detail = client.get_project(project_id)
+                return condense_facts(
+                    [fact.model_dump() for fact in detail.facts]
+                )
+            except Exception:
+                return "state summary unavailable"
+
+        def effort_for_step(step: int) -> str | None:
+            # Deterministic routing (first probe picks) is low; triage
+            # and severity reasoning get medium. Severity assessment on
+            # ambiguous evidence is where high would go — the model
+            # escalates by pausing on ambiguous output, not by a higher
+            # default.
+            if step <= 1:
+                return "low"
+            return "medium"
+
         context = AgentContext(
             provider=provider,
             model=model_config.model,
@@ -192,6 +236,11 @@ def run_native_explore_task(
             model_failover=registry.make_failover("explore", model_config.name)
             if hasattr(registry, "make_failover")
             else None,
+            system_prompt=system_prompt,
+            state_summary_provider=state_summary,
+            state_summary_interval=5,
+            recent_window=6,
+            effort_schedule=effort_for_step,
         )
         outcome = AgentLoop(context).run(
             f"Intent: {intent.description}\n\nInvestigate and report via "

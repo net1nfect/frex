@@ -806,3 +806,24 @@ def test_submit_action_log_requires_all_fields():
         json.dumps({"tool_name": "x", "target": "", "result_summary": "y"}),
     )
     assert result.output["error"] == "invalid_arguments"
+
+
+# ------------------------------------------------------------ get_fact_detail
+
+
+def test_get_fact_detail_returns_record():
+    executor = _executor(ScriptedContainer([]), facts_lookup=lambda fid: {"id": fid, "description": "x"})
+    result = executor.run("get_fact_detail", json.dumps({"fact_id": "fact_2"}))
+    assert result.ok is True
+    assert result.output["fact"]["id"] == "fact_2"
+
+
+def test_get_fact_detail_not_found():
+    executor = _executor(ScriptedContainer([]), facts_lookup=lambda fid: None)
+    result = executor.run("get_fact_detail", json.dumps({"fact_id": "nope"}))
+    assert result.output["error"] == "not_found"
+
+
+def test_get_fact_detail_unavailable_without_lookup():
+    result = _executor(ScriptedContainer([])).run("get_fact_detail", json.dumps({"fact_id": "x"}))
+    assert result.output["error"] == "unavailable"

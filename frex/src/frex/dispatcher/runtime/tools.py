@@ -39,6 +39,7 @@ DEFAULT_TOOL_OUTPUT_BUDGETS: dict[str, int] = {
     "session_authenticate": 800,
     "crawl_site": 6_000,
     "submit_action_log": 500,
+    "get_fact_detail": 2_000,
 }
 
 # Structured-wordlist presets for content_discovery. Deliberately small
@@ -430,6 +431,19 @@ TOOLS_SPEC: list[dict[str, Any]] = [
             "required": ["tool_name", "target", "result_summary"],
         },
     },
+    {
+        "name": "get_fact_detail",
+        "description": (
+            "Retrieve the full record of one fact by id (listed in the "
+            "state summary). Use instead of re-running a tool when you "
+            "need older findings — raw tool output is not kept forever."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"fact_id": {"type": "string"}},
+            "required": ["fact_id"],
+        },
+    },
 ]
 
 
@@ -547,6 +561,9 @@ class ToolExecutor:
         # (tool_name, target, result_summary, timestamp). Defaults to
         # routing through the facts sink as kind=action_log.
         action_log_sink: Callable[[dict[str, Any]], int] | None = None,
+        # get_fact_detail lookup: fact_id -> full record. None makes
+        # the tool report unavailability.
+        facts_lookup: Callable[[str], dict[str, Any] | None] | None = None,
     ):
         self._container_manager = container_manager
         self._container_name = container_name
@@ -567,8 +584,9 @@ class ToolExecutor:
         # keyed by session token. Scratch state for the executor's
         # lifetime; other tools accept a token and reuse its headers.
         self._sessions: dict[str, dict[str, Any]] = {}
-        # submit_action_log sink: append-only audit trail. Defaults to
-        # the facts sink with a forced kind when not overridden.
+        # get_fact_detail lookup: fact_id -> full record. None makes
+        # the tool report unavailability.
+        self._facts_lookup = facts_lookup
         self._action_log_sink = action_log_sink or (
             (lambda entry: facts_sink([entry]) if facts_sink else 0)
         )
@@ -1613,6 +1631,25 @@ class ToolExecutor:
                 "depth": depth,
             },
         )
+
+    def _tool_get_fact_detail(self, args: dict[str, Any]) -> ToolResult:
+        fact_id = args.get("fact_id")
+        if not isinstance(fact_id, str) or not fact_id.strip():
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": "fact_id is required"}
+            )
+        if self._facts_lookup is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "fact lookup is not configured for this task"},
+            )
+        record = self._facts_lookup(fact_id.strip())
+        if record is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "not_found", "message": f"no fact {fact_id!r} in this project"},
+            )
+        return ToolResult(ok=True, output={"fact": record})
 
     def _tool_submit_action_log(self, args: dict[str, Any]) -> ToolResult:
         tool_name = args.get("tool_name")
