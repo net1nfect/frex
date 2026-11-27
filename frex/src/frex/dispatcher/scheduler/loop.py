@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -510,6 +511,44 @@ class DispatcherLoop:
             return True
         return False
 
+    def _explore_task_call(
+        self,
+        project: ProjectDetail,
+        intent: Intent,
+        worker: WorkerConfig,
+        export_yaml: str,
+        cancellation: TaskCancellation,
+    ) -> tuple[Callable[..., str], tuple]:
+        """Build the positional args for the explore task.
+
+        The native task takes the provider registry *before* the project;
+        the CLI bridge takes the exported graph *after* the project. Keep
+        the two orders explicit so a signature change cannot silently swap
+        them.
+        """
+        explore_cfg = getattr(getattr(self.config, "tasks", None), "explore", None)
+        if getattr(explore_cfg, "native", False) and self.provider_registry is not None:
+            return run_native_explore_task, (
+                self.config,
+                self.client,
+                self.container_manager,
+                self.provider_registry,
+                project,
+                intent,
+                worker,
+                cancellation,
+            )
+        return run_explore_task, (
+            self.config,
+            self.client,
+            self.container_manager,
+            project,
+            export_yaml,
+            intent,
+            worker,
+            cancellation,
+        )
+
     def _dispatch_explore(self, project: ProjectDetail, export_yaml: str, intent: Intent) -> bool:
         selection = self._select_worker(project.project.id, "explore")
         worker = selection.worker
@@ -548,24 +587,11 @@ class DispatcherLoop:
             )
             return False
         try:
-            explore_cfg = getattr(getattr(self.config, "tasks", None), "explore", None)
-            if getattr(explore_cfg, "native", False) and self.provider_registry is not None:
-                task_fn = run_native_explore_task
-                extra_args: tuple = (self.provider_registry,)
-            else:
-                task_fn = run_explore_task
-                extra_args = (export_yaml,)
-            future = self.executor.submit(
-                task_fn,
-                self.config,
-                self.client,
-                self.container_manager,
-                project,
-                *extra_args,
-                intent,
-                worker,
-                cancellation := TaskCancellation(),
+            cancellation = TaskCancellation()
+            task_fn, task_args = self._explore_task_call(
+                project, intent, worker, export_yaml, cancellation
             )
+            future = self.executor.submit(task_fn, *task_args)
         except Exception:
             LOG.exception("failed to submit explore task project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
             self._best_effort_release(project.project.id, intent.id, worker.name)

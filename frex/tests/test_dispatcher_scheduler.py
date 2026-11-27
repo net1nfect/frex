@@ -9,6 +9,8 @@ from frex.dispatcher.config import WorkerConfig
 from frex.dispatcher.models import ReasonCheckpoint, RunningTask
 from frex.dispatcher.runtime.cancellation import TaskCancellation
 from frex.dispatcher.scheduler.loop import DispatcherLoop
+from frex.dispatcher.tasks.explore import run_explore_task
+from frex.dispatcher.tasks.explore_native import run_native_explore_task
 from frex.server.models import Fact, Intent, ProjectDetail, ProjectMeta, ProjectSummary
 
 
@@ -511,3 +513,66 @@ def test_budget_exhaustion_stops_dispatch():
     assert loop._budget_exhausted(
         project({"deadline": "2000-01-01T00:00:00Z"})
     ) is True
+
+
+# --- explore task argument order --------------------------------------------
+
+
+def test_native_explore_task_args_put_registry_before_project():
+    loop = make_loop()
+    loop.config.tasks = SimpleNamespace(
+        explore=SimpleNamespace(native=True, timeout=60)
+    )
+    loop.provider_registry = object()
+    project = make_project()
+    intent = make_intent()
+    worker = make_worker("w1")
+    cancellation = TaskCancellation()
+
+    task_fn, args = loop._explore_task_call(
+        project, intent, worker, "graph", cancellation
+    )
+
+    assert task_fn is run_native_explore_task
+    assert args[3] is loop.provider_registry
+    assert args[4] is project
+    assert args[5] is intent
+    assert args[6] is worker
+    assert args[7] is cancellation
+
+
+def test_bridge_explore_task_args_put_project_before_graph():
+    loop = make_loop()
+    loop.config.tasks = SimpleNamespace(
+        explore=SimpleNamespace(native=False, timeout=60)
+    )
+    loop.provider_registry = None
+    project = make_project()
+    intent = make_intent()
+    worker = make_worker("w1")
+    cancellation = TaskCancellation()
+
+    task_fn, args = loop._explore_task_call(
+        project, intent, worker, "graph", cancellation
+    )
+
+    assert task_fn is run_explore_task
+    assert args[3] is project
+    assert args[4] == "graph"
+    assert args[5] is intent
+    assert args[6] is worker
+    assert args[7] is cancellation
+
+
+def test_native_without_registry_falls_back_to_bridge():
+    loop = make_loop()
+    loop.config.tasks = SimpleNamespace(
+        explore=SimpleNamespace(native=True, timeout=60)
+    )
+    loop.provider_registry = None
+
+    task_fn, _ = loop._explore_task_call(
+        make_project(), make_intent(), make_worker("w1"), "graph", TaskCancellation()
+    )
+
+    assert task_fn is run_explore_task
