@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+import logging
+import os
+import threading
+
+from pydantic import TypeAdapter
+import requests
+from requests.adapters import HTTPAdapter
+
+from frex.server.models import Intent, ProjectDetail, ProjectSummary, Settings
+
+LOG = logging.getLogger(__name__)
+
+TOKEN_ENV = "FREX_API_TOKEN"
+
+
+class ProtocolError(RuntimeError):
+    def __init__(self, message: str, status_code: int, response_text: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+
+
+@dataclass(slots=True)
+class ApiResult:
+    status_code: int
+    data: Any | None = None
+    text: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 300
+
+
+class FrexClient:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 10.0,
+        api_token: str | None = None,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+        if api_token is None:
+            api_token = os.environ.get(TOKEN_ENV, "").strip() or None
+        self._api_token = api_token
+        self._summary_adapter = TypeAdapter(list[ProjectSummary])
+        self._local = threading.local()
+        self._sessions: dict[int, requests.Session] = {}
+        self._sessions_lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._sessions_lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            session.close()
+
+    def list_projects(self) -> list[ProjectSummary]:
+        response = self._session().get(self._url("/projects"), timeout=self._timeout)
+        response.raise_for_status()
+        return self._summary_adapter.validate_python(response.json())
+
+    def get_project(self, project_id: str) -> ProjectDetail:
+        response = self._session().get(self._url(f"/projects/{project_id}"), timeout=self._timeout)
+        response.raise_for_status()
+        return ProjectDetail.model_validate(response.json())
+
+    def get_usage(self, project_id: str) -> dict[str, Any]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/usage"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_settings(self) -> Settings:
+        response = self._session().get(self._url("/settings"), timeout=self._timeout)
+        response.raise_for_status()
+        return Settings.model_validate(response.json())
+
+    def export_project(self, project_id: str) -> str:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/export"),
+            params={"format": "yaml"},
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        return response.text
+
+    def heartbeat(self, project_id: str, intent_id: str, worker: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+            json={"worker": worker},
+        )
+
+    def claim_reason(self, project_id: str, worker: str, trigger: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/reason/claim",
+            json={"worker": worker, "trigger": trigger},
+        )
+
+    def reason_heartbeat(self, project_id: str, worker: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/reason/heartbeat",
+            json={"worker": worker},
+        )
+
+    def release_reason(self, project_id: str, worker: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/reason/release",
+            json={"worker": worker},
+        )
+
+    def release(self, project_id: str, intent_id: str, worker: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/intents/{intent_id}/release",
+            json={"worker": worker},
+        )
+
+    def conclude(
+        self,
+        project_id: str,
+        intent_id: str,
+        worker: str,
+        description: str,
+        *,
+        run_id: str | None = None,
+        kind: str | None = None,
+        subject: dict[str, Any] | None = None,
+        confidence: float | None = None,
+        match_rule: str | None = None,
+        match_value: str | None = None,
+    ) -> ApiResult:
+        payload: dict[str, Any] = {"worker": worker, "description": description}
+        # Only set what the caller knows; the server applies per-kind
+        # defaults for anything omitted.
+        for key, value in (
+            ("run_id", run_id),
+            ("kind", kind),
+            ("subject", subject),
+            ("confidence", confidence),
+            ("match_rule", match_rule),
+            ("match_value", match_value),
+        ):
+            if value is not None:
+                payload[key] = value
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/intents/{intent_id}/conclude",
+            json=payload,
+        )
+
+    def complete(self, project_id: str, from_ids: list[str], description: str, worker: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/complete",
+            json={"from": from_ids, "description": description, "worker": worker},
+        )
+
+    def create_intent(self, project_id: str, from_ids: list[str], description: str, creator: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/intents",
+            json={"from": from_ids, "description": description, "creator": creator, "worker": None},
+        )
+
+    def get_fact(self, project_id: str, fact_id: str) -> dict[str, Any]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/facts/{fact_id}"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def consume_hint_queue(self, project_id: str) -> list[dict[str, Any]]:
+        response = self._session().get(
+            self._url(f"/projects/{project_id}/hint-queue"), timeout=self._timeout
+        )
+        response.raise_for_status()
+        return response.json().get("hints", [])
+
+    def post_events(
+        self, project_id: str, task_type: str | None, events: list[dict[str, Any]]
+    ) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/events",
+            json={"task_type": task_type, "events": events},
+        )
+
+    def create_verification(
+        self, project_id: str, fact_id: str, payload: dict[str, Any]
+    ) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/facts/{fact_id}/verifications",
+            json=payload,
+        )
+
+    def create_run(self, project_id: str, payload: dict[str, Any]) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/runs",
+            json=payload,
+        )
+
+    def _request_json(self, method: str, path: str, json: dict[str, Any]) -> ApiResult:
+        try:
+            response = self._session().request(
+                method,
+                self._url(path),
+                json=json,
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            LOG.warning("request failed method=%s path=%s error=%s", method, path, exc)
+            return ApiResult(status_code=0, text=str(exc))
+        data: Any | None = None
+        if response.headers.get("content-type", "").startswith("application/json"):
+            data = response.json()
+        return ApiResult(status_code=response.status_code, data=data, text=response.text)
+
+    def _url(self, path: str) -> str:
+        return f"{self._base_url}{path}"
+
+    def _session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is not None:
+            return session
+
+        session = requests.Session()
+        if self._api_token:
+            session.headers["Authorization"] = f"Bearer {self._api_token}"
+        adapter = HTTPAdapter(pool_connections=64, pool_maxsize=64, pool_block=False)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        self._local.session = session
+        with self._sessions_lock:
+            self._sessions[threading.get_ident()] = session
+        return session

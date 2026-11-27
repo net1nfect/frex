@@ -1,11 +1,11 @@
 # Testing
 
-The test suite lives in `cairn/tests` and runs with `pytest`.
+The test suite lives in `frex/tests` and runs with `pytest`.
 
 ## Unit tests
 
 ```bash
-cd cairn
+cd frex
 uv sync
 uv run pytest -q -m "not integration"
 ```
@@ -24,7 +24,7 @@ worker image, and an explicit opt-in:
 
 ```bash
 docker image inspect ghcr.io/oritera/cairn-worker-container:latest
-CAIRN_E2E=1 uv run pytest -q -m integration
+FREX_E2E=1 uv run pytest -q -m integration
 ```
 
 It starts a temporary server, creates a project, runs one dispatcher

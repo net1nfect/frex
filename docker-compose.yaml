@@ -1,14 +1,14 @@
 services:
-  cairn-server:
+  frex-server:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cairn-app
-    container_name: cairn-server
+    image: frex-app
+    container_name: frex-server
     ports:
       - "8000:8000"
     volumes:
-      - ./datas/cairn/:/root/.local/share/cairn/
+      - ./datas/frex/:/root/.local/share/frex/
     healthcheck:
       test:
         - "CMD"
@@ -20,18 +20,18 @@ services:
       retries: 12
       start_period: 3s
     restart: unless-stopped
-    command: ["uv", "run", "cairn", "serve", "--host", "0.0.0.0", "--no-access-log"]
-  cairn-dispatcher:
+    command: ["uv", "run", "frex", "serve", "--host", "0.0.0.0", "--no-access-log"]
+  frex-dispatcher:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cairn-app
-    container_name: cairn-dispatcher
+    image: frex-app
+    container_name: frex-dispatcher
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./dispatch.yaml:/cairn/dispatch.yaml
+      - ./dispatch.yaml:/frex/dispatch.yaml
     depends_on:
-      cairn-server:
+      frex-server:
         condition: service_healthy
     restart: unless-stopped
-    command: ["uv", "run", "cairn", "dispatch", "--config", "dispatch.yaml"]
+    command: ["uv", "run", "frex", "dispatch", "--config", "dispatch.yaml"]

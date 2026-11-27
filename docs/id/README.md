@@ -1,6 +1,6 @@
-# Cairn — Ringkasan (Bahasa Indonesia)
+# Frex — Ringkasan (Bahasa Indonesia)
 
-Cairn adalah AI realtime red teaming engine. Dokumen ini ringkasan
+Frex adalah AI realtime red teaming engine. Dokumen ini ringkasan
 berbahasa Indonesia; sumber kebenaran adalah README utama dan
 `docs/en/`.
 
@@ -19,7 +19,7 @@ Yang ada di tree hari ini (masing-masing terverifikasi di repo):
   Lihat `docs/adr/003-native-runtime.md` dan `docs/id/native-runtime.md`.
 - **Lapisan operasi** — scope guard, gerbang approval risiko, ceiling
   budget, resource lock, secret terenkripsi, dan ingestor output tool
-  (`cairn ingest`).
+  (`frex ingest`).
 - **Benchmark harness** — `bench/` menjalankan skenario lab dan
   membandingkan model pada time-to-goal, fact terverifikasi, dan biaya.
 
@@ -30,8 +30,8 @@ dengan angka sungguhan.
 ## Menjalankan
 
 ```bash
-uv run --project cairn cairn serve          # server
-uv run --project cairn cairn dispatch --config dispatch.yaml  # dispatcher
+uv run --project frex frex serve          # server
+uv run --project frex frex dispatch --config dispatch.yaml  # dispatcher
 ```
 
-Verifikasi: `uv run pytest -q` di `cairn/`.
+Verifikasi: `uv run pytest -q` di `frex/`.

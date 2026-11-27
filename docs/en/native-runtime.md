@@ -90,8 +90,8 @@ loop berakhir.
   tetap selesai.
 - **Resource locks**: `POST /projects/{id}/locks/acquire` — kepemilikan
   eksklusif target berisiko dengan TTL; lock kadaluarsa direklaim otomatis.
-- **Secrets**: kredensial tersimpan terenkripsi (CAIRN_SECRET_KEY);
+- **Secrets**: kredensial tersimpan terenkripsi (FREX_SECRET_KEY);
   fakta mengutip `secret://name`. Nilai hanya lewat
   `GET /secrets/{name}?reveal=1` dengan auth aktif.
-- **Ingest**: `cairn ingest --type nmap|nuclei --file <output>` mengisi
+- **Ingest**: `frex ingest --type nmap|nuclei --file <output>` mengisi
   graf dari output tool tanpa LLM (fakta lahir terverifikasi).

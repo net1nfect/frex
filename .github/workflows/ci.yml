@@ -14,8 +14,8 @@ jobs:
         with:
           enable-cache: true
       - name: Sync dependencies
-        working-directory: cairn
+        working-directory: frex
         run: uv sync --frozen
       - name: Run unit tests
-        working-directory: cairn
+        working-directory: frex
         run: uv run pytest -q -m "not integration"

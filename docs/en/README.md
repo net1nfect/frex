@@ -1,4 +1,4 @@
-# Cairn — Documentation index (English)
+# Frex — Documentation index (English)
 
 Canonical docs live here; `docs/id/` holds the Indonesian versions.
 

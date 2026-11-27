@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="./README/banner.png" alt="Cairn Banner"/>
+<img src="./README/banner.png" alt="Frex Banner"/>
 
-# Cairn
+# Frex
 ### More Than Just AI Penetration Testing — Towards General State-Space Search
 
 <p>
@@ -10,7 +10,12 @@
   <img src="./README/tch.png" alt="TCH" height="55" />
 </p>
 
-Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and a goal, it searches for a path through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
+Frex is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and a goal, it searches for a path through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
+
+> **Frex** is a renamed and extended derivative of **Cairn** (upstream author: leixiao).
+> The upstream project's results and artwork are retained for attribution; the
+> v0.3/v0.4 runtime, evidence, operations, and benchmark work described below is
+> this fork's.
 
 <p>
   <a href="https://discord.gg/nDSy4NZVP" target="_blank" rel="noopener noreferrer">
@@ -25,11 +30,11 @@ Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no 
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1a8R5BhEVi/" target="_blank" rel="noopener noreferrer">
-    <img src="./README/cairn.png" alt="Cairn runtime screenshot" width="900" />
+    <img src="./README/frex.png" alt="Upstream Cairn runtime screenshot" width="900" />
   </a>
 </p>
 
-## What is Cairn?
+## What is Frex?
 
 Penetration testing is fundamentally a **directed search through a near-infinite state space**:
 
@@ -39,7 +44,7 @@ Penetration testing is fundamentally a **directed search through a near-infinite
 
 This structure is not unique to penetration testing. Vulnerability research, mathematical proof, CTF challenges — any problem with a clear starting point, a clear success condition, and an unknown path in between shares the same shape.
 
-Cairn is built for this class of problems. Penetration testing is the first domain it has been validated on.
+Frex is built for this class of problems. Penetration testing is the first domain it has been validated on.
 
 The engine is built on a **Blackboard Architecture** with an explicit fact-intent graph. Three primitives are all it needs:
 
@@ -55,7 +60,7 @@ Agent Workers run an OODA loop — Observe the full graph, Orient to the current
 
 Agents coordinate exclusively through the shared board (Stigmergy). No direct communication. No information silos.
 
-## Cairn in Action
+## Frex in Action
 
 https://github.com/user-attachments/assets/e557b1ac-dda4-41cb-87dd-9d56dbf05133
 
@@ -74,7 +79,7 @@ System architecture:
 
 ```
           ┌──────────────────────────────────┐
-          │           Cairn Server           │
+          │           Frex Server           │
           │    Facts + Intents + Hints       │
           └─────────────────┬────────────────┘
                             │
@@ -95,13 +100,16 @@ System architecture:
      └──────────────────┘     └─────────────────────┘
 ```
 
-**Cairn Server** maintains graph consistency only.
+**Frex Server** maintains graph consistency only.
 
-**Cairn Dispatcher** reads the graph, schedules tasks, spins up and tears down worker containers, and is the sole writer to the protocol. Each project gets its own Worker Container; multiple Agent Workers run concurrently inside it. Agent Workers only receive a prompt and return structured output.
+**Frex Dispatcher** reads the graph, schedules tasks, spins up and tears down worker containers, and is the sole writer to the protocol. Each project gets its own Worker Container; multiple Agent Workers run concurrently inside it. Agent Workers only receive a prompt and return structured output.
 
 Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
 
-## Results
+## Upstream results (Cairn)
+
+These are the original Cairn project's competition results, reproduced for
+attribution — not benchmark results for Frex.
 
 **Tencent Cloud Hackathon · AI Penetration Testing Challenge · 2nd Edition**
 
@@ -116,27 +124,27 @@ Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
 
 ## Status (v0.3)
 
-Cairn v0.3 is a realtime red teaming engine. What is in the tree today
+Frex v0.3 is a realtime red teaming engine. What is in the tree today
 (each verifiable in the repo, not narrative):
 
 - **Evidence & verification** — facts carry kind/status/confidence;
   agent claims start as hypotheses and only verification flips them.
-  See `docs/adr/002-evidence-model.md`.
+  See `docs/en/adr/002-evidence-model.md`.
 - **Provider layer** — models are configuration, not images. One
   `openai_compat` adapter covers vLLM/Ollama/llama.cpp; routing falls
-  through unhealthy models. See `docs/adr/001-provider-layer.md`.
+  through unhealthy models. See `docs/en/adr/001-provider-layer.md`.
 - **Native agent runtime** — the dispatcher runs the model loop with
   container tools, budgets, steering, and SSE streaming end-to-end.
-  See `docs/adr/003-native-runtime.md` and `docs/dev/native-runtime.md`.
+  See `docs/en/adr/003-native-runtime.md` and `docs/en/native-runtime.md`.
 - **Operations layer** — scope guard, risk approval gate, budget
   ceilings, resource locks, encrypted secret refs, and tool-output
-  ingestors (`cairn ingest`).
+  ingestors (`frex ingest`).
 - **Benchmark harness** — `bench/` runs lab scenarios and compares
   models on time-to-goal, verified facts, and cost.
 
 Not yet: verified end-to-end runs against a live self-hosted model
-(requires vLLM/Ollama in the loop), container E2E in CI, docs/en+id
-split. Claims beyond this list should not be assumed.
+(requires vLLM/Ollama or an OpenAI-compatible gateway in the loop) and
+container E2E in CI. Claims beyond this list should not be assumed.
 
 ## Documentation
 
@@ -163,12 +171,12 @@ English docs in `docs/en/`, Indonesian versions in `docs/id/`; ADRs in
 Both setup methods require the worker container image:
  
 ```bash
-docker pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest
+docker pull --platform=linux/amd64 ghcr.io/oritera/frex-worker-container:latest
 ```
  
 ### Docker Compose (recommended)
  
-Pull the base image used to build Cairn:
+Pull the base image used to build Frex:
  
 ```bash
 docker pull ghcr.io/astral-sh/uv:python3.13-trixie
@@ -180,7 +188,7 @@ Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then start bot
 docker compose up --build
 ```
  
-This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/cairn/`.
+This starts `frex-server` on port `8000` and `frex-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/frex/`.
  
 ### Securing the API (optional)
 
@@ -188,20 +196,20 @@ The API is open by default. To require a bearer token on every request,
 set the same variable on both sides:
 
 ```bash
-export CAIRN_API_TOKEN="$(openssl rand -hex 32)"   # server
-export CAIRN_API_TOKEN="<same token>"              # dispatcher
+export FREX_API_TOKEN="$(openssl rand -hex 32)"   # server
+export FREX_API_TOKEN="<same token>"              # dispatcher
 ```
 
 See `docs/dev/auth.md` for rotation and UI behaviour.
 
 ### Backing up before upgrading
 
-Cairn migrates its sqlite database automatically on server start
+Frex migrates its sqlite database automatically on server start
 (`schema_version` currently at 3). The migration is transactional, but a
 backup is still cheap insurance:
 
 ```bash
-cp ~/.local/share/cairn/cairn.db ~/.local/share/cairn/cairn.db.bak
+cp ~/.local/share/frex/frex.db ~/.local/share/frex/frex.db.bak
 ```
 
 ### Trusting agent claims
@@ -217,20 +225,20 @@ Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then:
  
 ```bash
 # Start the server
-uv run --project cairn cairn serve
+uv run --project frex frex serve
  
 # Run the dispatcher
-uv run --project cairn cairn dispatch --config dispatch.yaml
+uv run --project frex frex dispatch --config dispatch.yaml
  
 # Run startup health checks only
-uv run --project cairn cairn dispatch --config dispatch.yaml --startup-healthcheck-only
+uv run --project frex frex dispatch --config dispatch.yaml --startup-healthcheck-only
 ```
 
 ## Disclaimer
 
-Cairn is a general-purpose problem-solving engine. Although it supports penetration testing, CTF solving, security assessment, and vulnerability research workflows, it is intended to be used only in environments where you have explicit authorization to operate.
+Frex is a general-purpose problem-solving engine. Although it supports penetration testing, CTF solving, security assessment, and vulnerability research workflows, it is intended to be used only in environments where you have explicit authorization to operate.
 
-You are solely responsible for how you use this project. Do not use Cairn against systems, networks, applications, or data without clear prior permission from the owner or operator. Unauthorized security testing, exploitation, or data access may be illegal and may cause harm.
+You are solely responsible for how you use this project. Do not use Frex against systems, networks, applications, or data without clear prior permission from the owner or operator. Unauthorized security testing, exploitation, or data access may be illegal and may cause harm.
 
 The developers and contributors of this project do not endorse or accept responsibility for any misuse, abuse, damage, loss, or legal consequences arising from its use. By using this project, you agree to ensure that your activities comply with all applicable laws, regulations, contractual obligations, and professional or organizational policies in your jurisdiction.
 

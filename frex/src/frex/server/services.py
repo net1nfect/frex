@@ -1,0 +1,531 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+
+from fastapi import HTTPException
+
+from frex.server.models import (
+    BudgetConfig,
+    Fact,
+    Intent,
+    ProjectMeta,
+    ProjectReason,
+    ScopeConfig,
+)
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def next_project_id(conn: sqlite3.Connection) -> str:
+    conn.execute("UPDATE counters SET value = value + 1 WHERE name = 'project'")
+    row = conn.execute("SELECT value FROM counters WHERE name = 'project'").fetchone()
+    return f"proj_{row['value']:03d}"
+
+
+def _next_scoped_id(
+    conn: sqlite3.Connection, kind: str, prefix: str, project_id: str
+) -> str:
+    conn.execute(
+        "INSERT OR IGNORE INTO scoped_counters (project_id, kind, value) VALUES (?, ?, 0)",
+        (project_id, kind),
+    )
+    conn.execute(
+        "UPDATE scoped_counters SET value = value + 1 WHERE project_id = ? AND kind = ?",
+        (project_id, kind),
+    )
+    row = conn.execute(
+        "SELECT value FROM scoped_counters WHERE project_id = ? AND kind = ?",
+        (project_id, kind),
+    ).fetchone()
+    assert row is not None
+    return f"{prefix}{row['value']:03d}"
+
+
+def next_fact_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "fact", "f", project_id)
+
+
+def next_intent_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "intent", "i", project_id)
+
+
+def next_hint_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "hint", "h", project_id)
+
+
+def next_run_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "run", "run_", project_id)
+
+
+def next_evidence_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "evidence", "ev_", project_id)
+
+
+def next_verification_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "verification", "ver_", project_id)
+
+
+def verification_target_status(current: str, result: str) -> str:
+    """State machine for fact verification (plan section 2.7).
+
+    pass always promotes to verified. fail refutes an unproven fact but
+    only disputes one that was verified — a refuted fact stays refuted as
+    a memory of the failure. inconclusive changes nothing.
+    """
+    if result == "pass":
+        return "verified"
+    if result == "fail":
+        if current in ("hypothesis", "refuted"):
+            return "refuted"
+        return "disputed"
+    return current
+
+
+def get_project_or_404(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Project not found")
+    return row
+
+
+def check_project_active(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+    row = get_project_or_404(conn, project_id)
+    if row["status"] != "active":
+        raise HTTPException(403, f"Project is {row['status']}")
+    return row
+
+
+def check_project_hint_writable(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+    row = get_project_or_404(conn, project_id)
+    if row["status"] not in ("active", "stopped", "completed"):
+        raise HTTPException(403, f"Project is {row['status']}")
+    return row
+
+
+def check_project_completed(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+    row = get_project_or_404(conn, project_id)
+    if row["status"] != "completed":
+        raise HTTPException(403, f"Project is {row['status']}")
+    return row
+
+
+def validate_facts_exist(
+    conn: sqlite3.Connection, project_id: str, fact_ids: list[str]
+) -> None:
+    for fid in fact_ids:
+        row = conn.execute(
+            "SELECT 1 FROM facts WHERE id = ? AND project_id = ?", (fid, project_id)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, f"Fact {fid} not found")
+
+
+def validate_goal_not_in_sources(fact_ids: list[str]) -> None:
+    if "goal" in fact_ids:
+        raise HTTPException(400, "goal cannot be used in from")
+
+
+def validate_goal_evidence(
+    conn: sqlite3.Connection, project_id: str, goal_evidence: list[str]
+) -> None:
+    """Completing a project must point at proof of access.
+
+    ``require_evidence = 0`` keeps the old behaviour — goal_evidence is
+    optional and only checked when supplied. With it enabled, an empty list
+    is rejected: claiming the goal without citing verified evidence is
+    exactly the claim this schema exists to catch.
+    """
+    row = conn.execute("SELECT require_evidence FROM settings WHERE rowid = 1").fetchone()
+    require_evidence = bool(row["require_evidence"])
+    if not goal_evidence:
+        if require_evidence:
+            raise HTTPException(
+                409, "goal_evidence is required by current settings"
+            )
+        return
+    for fact_id in goal_evidence:
+        fact = conn.execute(
+            "SELECT status FROM facts WHERE id = ? AND project_id = ?",
+            (fact_id, project_id),
+        ).fetchone()
+        if fact is None:
+            raise HTTPException(404, f"Fact {fact_id} not found")
+        if fact["status"] != "verified":
+            raise HTTPException(
+                409, f"Goal evidence fact {fact_id} is {fact['status']}, not verified"
+            )
+        evidence = conn.execute(
+            """
+            SELECT 1 FROM evidence
+            WHERE fact_id = ? AND project_id = ? AND kind IN ('access', 'goal')
+            LIMIT 1
+            """,
+            (fact_id, project_id),
+        ).fetchone()
+        if evidence is None:
+            raise HTTPException(
+                409,
+                f"Goal evidence fact {fact_id} has no access or goal evidence",
+            )
+
+
+def validate_intent_creator_worker(creator: str, worker: str | None) -> None:
+    if worker is not None and worker != creator:
+        raise HTTPException(400, "worker must be null or equal to creator")
+
+
+def get_intent_or_404(
+    conn: sqlite3.Connection, project_id: str, intent_id: str
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+        (intent_id, project_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Intent not found")
+    return row
+
+
+def claim_open_intent(
+    conn: sqlite3.Connection,
+    project_id: str,
+    intent_id: str,
+    worker: str,
+    now: str | None = None,
+) -> sqlite3.Row:
+    """Claim or refresh an open intent for ``worker`` in one statement.
+
+    The lease check, the ownership check, and the write happen inside a
+    single conditional UPDATE, so two workers racing for the same intent
+    cannot both observe it as free. ``rowcount`` decides the winner; the
+    loser gets the same 409 it would have received sequentially.
+    """
+    now = now or utcnow()
+    timeout = get_intent_timeout(conn)
+    cursor = conn.execute(
+        """
+        UPDATE intents
+        SET worker = ?, last_heartbeat_at = ?
+        WHERE id = ? AND project_id = ?
+          AND to_fact_id IS NULL
+          AND (
+                worker IS NULL
+             OR worker = ?
+             OR last_heartbeat_at IS NULL
+             OR (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+          )
+        """,
+        (worker, now, intent_id, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        _raise_intent_claim_conflict(conn, project_id, intent_id)
+    return get_intent_or_404(conn, project_id, intent_id)
+
+
+def begin_intent_conclusion(
+    conn: sqlite3.Connection,
+    project_id: str,
+    intent_id: str,
+    worker: str,
+    now: str | None = None,
+) -> None:
+    """Atomically close an open intent before its fact is written.
+
+    Concluding is also a claim: the intent must be free (or already held by
+    the same worker) and not concluded. Marking it concluded first means a
+    concurrent second conclude fails here instead of inserting a duplicate
+    fact.
+    """
+    now = now or utcnow()
+    timeout = get_intent_timeout(conn)
+    cursor = conn.execute(
+        """
+        UPDATE intents
+        SET worker = ?, last_heartbeat_at = ?, concluded_at = ?
+        WHERE id = ? AND project_id = ?
+          AND to_fact_id IS NULL
+          AND (
+                worker IS NULL
+             OR worker = ?
+             OR last_heartbeat_at IS NULL
+             OR (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+          )
+        """,
+        (worker, now, now, intent_id, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        _raise_intent_claim_conflict(conn, project_id, intent_id)
+
+
+def _raise_intent_claim_conflict(
+    conn: sqlite3.Connection, project_id: str, intent_id: str
+) -> None:
+    row = get_intent_or_404(conn, project_id, intent_id)
+    if row["to_fact_id"] is not None:
+        raise HTTPException(409, "Intent already concluded")
+    raise HTTPException(409, f"Intent is currently claimed by {row['worker']}")
+
+
+def get_completion_intent_or_409(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+    rows = conn.execute(
+        "SELECT * FROM intents WHERE project_id = ? AND to_fact_id = 'goal'",
+        (project_id,),
+    ).fetchall()
+    if not rows:
+        raise HTTPException(409, "Completed project is missing its completion intent")
+    if len(rows) != 1:
+        raise HTTPException(409, "Completed project has multiple completion intents")
+    return rows[0]
+
+
+def fact_from_row(row: sqlite3.Row) -> Fact:
+    subject = None
+    if row["subject_json"]:
+        try:
+            subject = json.loads(row["subject_json"])
+        except (TypeError, ValueError):
+            subject = None
+    return Fact(
+        id=row["id"],
+        description=row["description"],
+        kind=row["kind"],
+        status=row["status"],
+        confidence=row["confidence"],
+        subject=subject,
+        supersedes=row["supersedes"],
+        created_by_run=row["created_by_run"],
+        created_at=row["created_at"],
+    )
+
+
+def intent_to_model(conn: sqlite3.Connection, row: sqlite3.Row, project_id: str) -> Intent:
+    sources = conn.execute(
+        "SELECT fact_id FROM intent_sources WHERE intent_id = ? AND project_id = ? ORDER BY rowid",
+        (row["id"], project_id),
+    ).fetchall()
+    return Intent(
+        id=row["id"],
+        **{"from": [s["fact_id"] for s in sources]},
+        to=row["to_fact_id"],
+        description=row["description"],
+        creator=row["creator"],
+        worker=row["worker"],
+        last_heartbeat_at=row["last_heartbeat_at"],
+        created_at=row["created_at"],
+        concluded_at=row["concluded_at"],
+        risk_class=row["risk_class"] if "risk_class" in row.keys() else "low",
+        approved_at=row["approved_at"] if "approved_at" in row.keys() else None,
+        approved_by=row["approved_by"] if "approved_by" in row.keys() else None,
+    )
+
+
+def build_intents(conn: sqlite3.Connection, project_id: str) -> list[Intent]:
+    rows = conn.execute(
+        "SELECT * FROM intents WHERE project_id = ? ORDER BY created_at",
+        (project_id,),
+    ).fetchall()
+    return [intent_to_model(conn, r, project_id) for r in rows]
+
+
+def get_intent_timeout(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT intent_timeout FROM settings WHERE rowid = 1").fetchone()
+    return row["intent_timeout"]
+
+
+def get_reason_timeout(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT reason_timeout FROM settings WHERE rowid = 1").fetchone()
+    return row["reason_timeout"]
+
+
+def project_reason_from_row(row: sqlite3.Row) -> ProjectReason | None:
+    if row["reason_worker"] is None:
+        return None
+    return ProjectReason(
+        worker=row["reason_worker"],
+        trigger=row["reason_trigger"],
+        started_at=row["reason_started_at"],
+        last_heartbeat_at=row["reason_last_heartbeat_at"],
+    )
+
+
+def scope_from_row(row: sqlite3.Row) -> ScopeConfig | None:
+    import json
+
+    try:
+        raw = row["scope_json"]
+    except (KeyError, IndexError):
+        return None
+    if not raw:
+        return None
+    try:
+        return ScopeConfig.model_validate(json.loads(raw))
+    except (ValueError, TypeError):
+        return None
+
+
+def budget_from_row(row: sqlite3.Row) -> BudgetConfig | None:
+    import json
+
+    try:
+        raw = row["budget_json"]
+    except (KeyError, IndexError):
+        return None
+    if not raw:
+        return None
+    try:
+        return BudgetConfig.model_validate(json.loads(raw))
+    except (ValueError, TypeError):
+        return None
+
+
+def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
+    return ProjectMeta(
+        id=row["id"],
+        title=row["title"],
+        status=row["status"],
+        created_at=row["created_at"],
+        reason=project_reason_from_row(row),
+        scope=scope_from_row(row),
+        budget=budget_from_row(row),
+    )
+
+
+def clear_project_reason(conn: sqlite3.Connection, project_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE projects
+        SET reason_worker = NULL,
+            reason_trigger = NULL,
+            reason_started_at = NULL,
+            reason_last_heartbeat_at = NULL
+        WHERE id = ?
+        """,
+        (project_id,),
+    )
+
+
+def expire_workers(conn: sqlite3.Connection, project_id: str | None = None) -> None:
+    timeout = get_intent_timeout(conn)
+    now = utcnow()
+    query = """
+        UPDATE intents
+        SET worker = NULL
+        WHERE to_fact_id IS NULL
+          AND worker IS NOT NULL
+          AND last_heartbeat_at IS NOT NULL
+          AND (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+    """
+    params: tuple = (now, timeout)
+    if project_id is not None:
+        query = query.replace("WHERE ", "WHERE project_id = ? AND ", 1)
+        params = (project_id, now, timeout)
+    conn.execute(query, params)
+
+
+def claim_project_reason_lease(
+    conn: sqlite3.Connection,
+    project_id: str,
+    worker: str,
+    trigger: str,
+    now: str | None = None,
+) -> sqlite3.Row:
+    """Claim the project reason lease in a single conditional UPDATE.
+
+    Same pattern as ``claim_open_intent``: lease expiry, ownership, and the
+    write are one statement, so two workers racing cannot both hold the
+    lease. A re-claim by the current holder keeps the original trigger and
+    ``started_at`` instead of resetting the session.
+    """
+    now = now or utcnow()
+    timeout = get_reason_timeout(conn)
+    expired = (
+        "reason_last_heartbeat_at IS NULL"
+        " OR (julianday(?) - julianday(reason_last_heartbeat_at)) * 86400 > ?"
+    )
+    cursor = conn.execute(
+        f"""
+        UPDATE projects
+        SET reason_worker = ?,
+            reason_trigger = CASE WHEN reason_worker IS NULL OR {expired}
+                THEN ? ELSE reason_trigger END,
+            reason_started_at = CASE WHEN reason_worker IS NULL OR {expired}
+                THEN ? ELSE reason_started_at END,
+            reason_last_heartbeat_at = ?
+        WHERE id = ?
+          AND (reason_worker IS NULL OR reason_worker = ? OR {expired})
+        """,
+        (worker, now, timeout, trigger, now, timeout, now, now, project_id, worker, now, timeout),
+    )
+    if cursor.rowcount == 0:
+        row = get_project_or_404(conn, project_id)
+        raise HTTPException(
+            409, f"Project reason is currently claimed by {row['reason_worker']}"
+        )
+    return get_project_or_404(conn, project_id)
+
+
+def _raise_reason_lease_conflict(
+    conn: sqlite3.Connection, project_id: str
+) -> None:
+    row = get_project_or_404(conn, project_id)
+    if row["reason_worker"] is None:
+        raise HTTPException(409, "Project reason is not currently claimed")
+    raise HTTPException(
+        409, f"Project reason is currently claimed by {row['reason_worker']}"
+    )
+
+
+def refresh_project_reason_heartbeat(
+    conn: sqlite3.Connection, project_id: str, worker: str, now: str | None = None
+) -> sqlite3.Row:
+    now = now or utcnow()
+    cursor = conn.execute(
+        "UPDATE projects SET reason_last_heartbeat_at = ?"
+        " WHERE id = ? AND reason_worker = ?",
+        (now, project_id, worker),
+    )
+    if cursor.rowcount == 0:
+        _raise_reason_lease_conflict(conn, project_id)
+    return get_project_or_404(conn, project_id)
+
+
+def release_project_reason_lease(
+    conn: sqlite3.Connection, project_id: str, worker: str
+) -> sqlite3.Row:
+    cursor = conn.execute(
+        """
+        UPDATE projects
+        SET reason_worker = NULL,
+            reason_trigger = NULL,
+            reason_started_at = NULL,
+            reason_last_heartbeat_at = NULL
+        WHERE id = ? AND reason_worker = ?
+        """,
+        (project_id, worker),
+    )
+    if cursor.rowcount == 0:
+        _raise_reason_lease_conflict(conn, project_id)
+    return get_project_or_404(conn, project_id)
+
+
+def expire_reason_leases(conn: sqlite3.Connection, project_id: str | None = None) -> None:
+    timeout = get_reason_timeout(conn)
+    now = utcnow()
+    query = """
+        UPDATE projects
+        SET reason_worker = NULL,
+            reason_trigger = NULL,
+            reason_started_at = NULL,
+            reason_last_heartbeat_at = NULL
+        WHERE reason_worker IS NOT NULL
+          AND reason_last_heartbeat_at IS NOT NULL
+          AND (julianday(?) - julianday(reason_last_heartbeat_at)) * 86400 > ?
+    """
+    params: tuple = (now, timeout)
+    if project_id is not None:
+        query = query.replace("WHERE ", "WHERE id = ? AND ", 1)
+        params = (project_id, now, timeout)
+    conn.execute(query, params)

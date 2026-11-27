@@ -7,8 +7,8 @@ environment variable on both sides.
 ## Server
 
 ```bash
-export CAIRN_API_TOKEN="$(openssl rand -hex 32)"
-uv run --project cairn cairn serve
+export FREX_API_TOKEN="$(openssl rand -hex 32)"
+uv run --project frex frex serve
 ```
 
 When the variable is set:
@@ -22,11 +22,11 @@ unauthenticated requests.
 
 ## Dispatcher
 
-`CairnClient` reads the same variable:
+`FrexClient` reads the same variable:
 
 ```bash
-export CAIRN_API_TOKEN="<same token>"
-uv run --project cairn cairn dispatch --config dispatch.yaml
+export FREX_API_TOKEN="<same token>"
+uv run --project frex frex dispatch --config dispatch.yaml
 ```
 
 No config file change is needed. The token is sent on every request made by
@@ -40,7 +40,7 @@ Requests made by the UI include the bearer header.
 ## Rotating the token
 
 1. Stop the dispatcher.
-2. Change `CAIRN_API_TOKEN` on the server and restart it.
+2. Change `FREX_API_TOKEN` on the server and restart it.
 3. Change the variable in the dispatcher environment and restart it.
 4. Reload the UI and enter the new token.
 

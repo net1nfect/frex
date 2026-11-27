@@ -1,5 +1,5 @@
-# Cairn server API endpoint.
-server: "http://cairn-server:8000"
+# Frex server API endpoint.
+server: "http://frex-server:8000"
 
 # Shared environment variables merged into every worker.
 common_env:
@@ -17,7 +17,7 @@ runtime:
   max_project_workers: 4
   # Healthcheck timeout for each worker process before a task is assigned.
   healthcheck_timeout: 20
-  # Prompt set loaded from cairn/src/cairn/dispatcher/prompts/.
+  # Prompt set loaded from frex/src/frex/dispatcher/prompts/.
   prompt_group: "default"
 
 tasks:

@@ -1,6 +1,6 @@
 # Phase 0 acceptance report
 
-Date: 2026-11-25 · Branch: `feat/v0.3-hardening` · Baseline: cairn 0.2.1 (`86e5a03`)
+Date: 2026-11-25 · Branch: `feat/v0.3-hardening` · Baseline: frex 0.2.1 (`86e5a03`)
 
 ## Scope delivered
 
@@ -11,7 +11,7 @@ Hardening and instrumentation only — no provider layer, no evidence model:
    server and dispatcher behaviour before anything changed.
 2. **Schema migrations** — `schema_version` table with a transactional,
    idempotent migration runner; v2 `idempotency_keys`, v3 `task_runs`.
-3. **Optional bearer auth** — `CAIRN_API_TOKEN` on the server, dispatcher
+3. **Optional bearer auth** — `FREX_API_TOKEN` on the server, dispatcher
    client, and browser UI; off by default, warning logged when off.
 4. **Atomic claims** — intent heartbeat/conclude and reason lease are single
    conditional `UPDATE`s guarded by `rowcount`; racing workers can no longer
@@ -41,7 +41,7 @@ Hardening and instrumentation only — no provider layer, no evidence model:
 ## Not verified here
 
 - **Container E2E** — `tests/test_e2e_mock.py` is marked `integration` and
-  skips unless `CAIRN_E2E=1` and the worker image exists; the image
+  skips unless `FREX_E2E=1` and the worker image exists; the image
   (`ghcr.io/oritera/cairn-worker-container:latest`) was not available locally.
 - **CI** — `.github/workflows/ci.yml` is in place but has not run on a real
   remote (the repo has no GitHub remote yet).
@@ -73,7 +73,7 @@ Hardening and instrumentation only — no provider layer, no evidence model:
 ## Next steps (phase 1 preview)
 
 - Evidence-backed facts: `facts.kind/status`, `evidence`,
-  `fact_verifications` (see `cairn-v0.3-evidence-verify.md`).
+  `fact_verifications` (see `frex-v0.3-evidence-verify.md`).
 - Native agent runtime with streaming for `explore`/`verify`.
 - Wire `RunRecorder` into all dispatcher task paths and surface run ids in
   conclude payloads.
