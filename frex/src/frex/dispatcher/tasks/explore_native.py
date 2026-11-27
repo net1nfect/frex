@@ -130,6 +130,9 @@ def run_native_explore_task(
             max_tokens=model_config.max_tokens,
             temperature=model_config.temperature,
             stream_tokens=True,
+            model_failover=registry.make_failover("explore", model_config.name)
+            if hasattr(registry, "make_failover")
+            else None,
         )
         outcome = AgentLoop(context).run(
             f"Intent: {intent.description}\n\nInvestigate and report via "
@@ -143,7 +146,7 @@ def run_native_explore_task(
             project_id,
             "explore",
             worker,
-            model=model_config.model,
+            model=outcome.model or model_config.model,
             intent_id=intent.id,
             command=f"agent-loop({model_config.name})",
         )

@@ -294,3 +294,29 @@ def test_openai_compat_streaming_error_raises(monkeypatch):
     provider = OpenAICompatProvider("local", "http://x")
     with pytest.raises(ProviderError, match="503"):
         provider.complete("m", [{"role": "user", "content": "x"}], stream=True)
+
+def test_registry_make_failover_advances_and_exhausts(provider_server):
+    config = DispatchConfig.model_construct(
+        providers=[ProviderConfig(name="local", type="openai_compat", base_url=provider_server)],
+        models=[
+            ModelConfig(name="fast", provider="local", model="qwen-local"),
+            ModelConfig(name="mid", provider="local", model="qwen-local"),
+            ModelConfig(name="dead", provider="local", model="dead-model"),
+        ],
+        routing={"explore": ["fast", "mid", "dead"]},
+    )
+    registry = ProviderRegistry(config)
+    failover = registry.make_failover("explore", "fast")
+
+    # First advance: "mid" is healthy (same live test server).
+    provider, model_id = failover()
+    assert model_id == "qwen-local"
+    # Second advance: "dead" is unhealthy -> exhausted -> None.
+    assert failover() is None
+    # Cached health for the tail was invalidated.
+    assert "dead" not in registry._health
+
+def test_registry_make_failover_unknown_start_starts_at_head(provider_server):
+    registry = make_registry(provider_server)
+    failover = registry.make_failover("reason", "nonexistent")
+    assert failover() is None  # single-entry chain, nothing after head

@@ -412,3 +412,54 @@ def test_tool_history_uses_openai_wire_format():
         assert isinstance(message["content"], str)
         payload = json.loads(message["content"])
         assert payload["exit_code"] == 0
+
+def _submit_completion():
+    return Completion(
+        text=None,
+        tool_calls=[
+            ToolCall(id="c9", name="submit_result", arguments='{"result": {"ok": true}}')
+        ],
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+
+def test_failover_switches_provider_mid_run():
+    broken = ScriptedProvider([ProviderError("gateway 502", retriable=True)])
+    working = ScriptedProvider([_submit_completion()])
+    failovers = [(working, "backup-model")]
+    context = make_context(
+        broken,
+        ToolExecutor(FakeContainers(), "c"),
+        model_failover=lambda: failovers.pop(0) if failovers else None,
+    )
+    outcome = AgentLoop(context).run("do it")
+    assert outcome.status == "completed"
+    assert outcome.model == "backup-model"
+    assert outcome.error is None
+
+def test_failover_exhausted_reports_provider_error():
+    broken = ScriptedProvider([ProviderError("gateway 502", retriable=True)])
+    events: list[tuple[str, dict]] = []
+    context = make_context(
+        broken,
+        ToolExecutor(FakeContainers(), "c"),
+        model_failover=lambda: None,
+        on_event=lambda kind, data: events.append((kind, data)),
+    )
+    outcome = AgentLoop(context).run("do it")
+    assert outcome.status == "provider_error"
+    assert "gateway 502" in outcome.error
+    assert ("model.failover", {"model": "backup-model"}) not in events
+
+def test_failover_event_emitted():
+    broken = ScriptedProvider([ProviderError("down", retriable=True)])
+    working = ScriptedProvider([_submit_completion()])
+    events: list[tuple[str, dict]] = []
+    failovers = [(working, "backup-model")]
+    context = make_context(
+        broken,
+        ToolExecutor(FakeContainers(), "c"),
+        model_failover=lambda: failovers.pop(0) if failovers else None,
+        on_event=lambda kind, data: events.append((kind, data)),
+    )
+    AgentLoop(context).run("do it")
+    assert ("model.failover", {"model": "backup-model"}) in events

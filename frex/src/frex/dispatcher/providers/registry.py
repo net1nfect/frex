@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from frex.dispatcher.providers.base import Provider, ProviderError
 from frex.dispatcher.providers.openai_compat import OpenAICompatProvider
@@ -97,3 +97,42 @@ class ProviderRegistry:
     def get_provider(self, model_name: str) -> Provider:
         model = self._models[model_name]
         return self._providers[model.provider]
+
+    def routing_chain(self, task_type: str) -> list["ModelConfig"]:
+        chain = self._routing.get(task_type)
+        if not chain:
+            return []
+        return [self._models[name] for name in chain if name in self._models]
+
+    def make_failover(
+        self, task_type: str, current_model_name: str
+    ) -> Callable[[], tuple[Provider, str] | None]:
+        """Build a failover callable for a running agent loop.
+
+        The callable advances along the routing chain, skipping unhealthy
+        models, and returns (provider, model_id) for the next candidate —
+        or None when the chain is exhausted. Health of the model being
+        left behind is invalidated so future resolves re-probe it.
+        """
+        chain = self.routing_chain(task_type)
+        try:
+            index = next(
+                i for i, m in enumerate(chain) if m.name == current_model_name
+            )
+        except StopIteration:
+            index = 0
+
+        def failover() -> tuple[Provider, str] | None:
+            nonlocal index
+            while index + 1 < len(chain):
+                index += 1
+                candidate = chain[index]
+                if self.healthy(candidate.name):
+                    return self.get_provider(candidate.name), candidate.model
+            # Everything after the start position is unhealthy: forget
+            # cached health for the whole tail so the next resolve
+            # re-probes instead of trusting a stale failure.
+            self.invalidate_health()
+            return None
+
+        return failover

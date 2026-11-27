@@ -33,6 +33,7 @@ class AgentOutcome:
     status: str  # completed | failed | cancelled | budget_exhausted | provider_error
     result: dict[str, Any] | None = None
     error: str | None = None
+    model: str | None = None  # provider model id actually used last
     steps: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
@@ -61,6 +62,11 @@ class AgentContext:
     # stream_tokens: stream completions and emit token.delta events as
     # they arrive. The provider adapter must support stream=True.
     stream_tokens: bool = False
+    # Mid-run failover: called after a ProviderError; returns
+    # (provider, model_id) for the next model in the routing chain, or
+    # None when no healthy fallback exists. Without it a provider error
+    # ends the loop.
+    model_failover: Callable[[], tuple[Provider, str] | None] | None = None
 
 
 class AgentLoop:
@@ -77,6 +83,7 @@ class AgentLoop:
 
         def finish(status: str, **kwargs: Any) -> AgentOutcome:
             outcome.status = status
+            outcome.model = self.ctx.model
             outcome.steps = step_count
             outcome.wall_ms = int((time.perf_counter() - started) * 1000)
             for key, value in kwargs.items():
@@ -146,6 +153,14 @@ class AgentLoop:
                 )
             except ProviderError as exc:
                 self.ctx.on_event("error", {"message": str(exc)})
+                if self.ctx.model_failover is not None:
+                    fallback = self.ctx.model_failover()
+                    if fallback is not None:
+                        self.ctx.provider, self.ctx.model = fallback
+                        self.ctx.on_event(
+                            "model.failover", {"model": self.ctx.model}
+                        )
+                        continue
                 return finish("provider_error", error=str(exc))
 
             tokens_in += completion.usage.tokens_in
