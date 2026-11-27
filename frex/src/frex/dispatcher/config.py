@@ -137,6 +137,9 @@ class ExploreTaskConfig(BaseModel):
     # native: run explore through the agent loop (model API + tools)
     # instead of the CLI bridge. Requires providers/models/routing.
     native: bool = False
+    # Restrict the tool surface for native explore (e.g. drop
+    # nuclei_scan/screenshot on minimal containers). None/empty = all.
+    tools_enabled: list[str] | None = None
 
 
 class BootstrapTaskConfig(BaseModel):

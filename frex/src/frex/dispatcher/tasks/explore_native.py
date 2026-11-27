@@ -19,7 +19,7 @@ from frex.dispatcher.runtime.cancellation import TaskCancellation
 from frex.dispatcher.runtime.heartbeat import HeartbeatLease
 from frex.dispatcher.runtime.event_publisher import EventPublisher
 from frex.dispatcher.runtime.scope import Scope
-from frex.dispatcher.runtime.tools import ToolExecutor
+from frex.dispatcher.runtime.tools import TOOLS_SPEC, ToolExecutor
 from frex.dispatcher.tasks.common import RunRecorder, best_effort_release, cancel_reason
 from frex.dispatcher.workers.registry import get_driver
 from frex.server.models import Intent
@@ -112,12 +112,38 @@ def run_native_explore_task(
         # Scope guard: out-of-scope calls are rejected back to the model,
         # not executed. No scope configured means unrestricted.
         scope = Scope.from_config(getattr(project.project, "scope", None))
+        enabled = getattr(explore_config, "tools_enabled", None)
+        enabled_set = set(enabled) if enabled else None
+
+        def record_agent_facts(facts: list[dict[str, Any]]) -> int:
+            """submit_facts sink: post agent findings into the graph the
+            same way ingestors do — born verified from tool evidence,
+            attached to one intent anchored on origin."""
+            from frex.dispatcher.ingest.base import IngestedFact, post_facts
+
+            ingested = [
+                IngestedFact(
+                    description=str(fact["description"]),
+                    kind=str(fact.get("kind", "observation")),
+                    match_value=str(fact["description"]),
+                    match_rule="contains",
+                )
+                for fact in facts
+            ]
+            posted, _failed = post_facts(client, project_id, ingested)
+            return posted
+
         executor = ToolExecutor(
             container_manager,
             container_name,
             command_timeout_seconds=explore_config.timeout,
             scope_checker=scope.checker() if scope else None,
+            enabled_tools=enabled_set,
+            facts_sink=record_agent_facts,
         )
+        tools_spec = TOOLS_SPEC
+        if enabled_set is not None:
+            tools_spec = [tool for tool in TOOLS_SPEC if tool["name"] in enabled_set]
         context = AgentContext(
             provider=provider,
             model=model_config.model,
@@ -130,6 +156,7 @@ def run_native_explore_task(
             max_tokens=model_config.max_tokens,
             temperature=model_config.temperature,
             stream_tokens=True,
+            tools_spec=tools_spec,
             model_failover=registry.make_failover("explore", model_config.name)
             if hasattr(registry, "make_failover")
             else None,

@@ -145,8 +145,12 @@ class Scope:
         network targets.
         """
         def check(name: str, args: dict[str, Any]) -> str | None:
-            if name == "http_request":
+            if name in ("http_request", "http_probe", "screenshot"):
                 return self.check_url(args.get("url", ""))
+            if name in ("port_scan", "nuclei_scan"):
+                # check_command, not check_host: scan targets may be CIDRs
+                # (10.0.0.0/24), which check_command validates as networks.
+                return self.check_command(args.get("target", ""))
             if name == "run_command":
                 return self.check_command(args.get("command", ""))
             return None

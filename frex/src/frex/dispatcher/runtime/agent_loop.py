@@ -67,6 +67,10 @@ class AgentContext:
     # None when no healthy fallback exists. Without it a provider error
     # ends the loop.
     model_failover: Callable[[], tuple[Provider, str] | None] | None = None
+    # Tool spec offered to the model. Defaults to the full TOOLS_SPEC;
+    # deployments with a restricted tool surface pass a filtered spec
+    # so the model never sees disabled tools.
+    tools_spec: list[dict[str, Any]] | None = None
 
 
 class AgentLoop:
@@ -125,7 +129,7 @@ class AgentLoop:
                     completion: Completion = self.ctx.provider.complete(
                         self.ctx.model,
                         messages,
-                        tools=TOOLS_SPEC,
+                        tools=self.ctx.tools_spec or TOOLS_SPEC,
                         stream=True,
                         on_token=lambda delta: self.ctx.on_event(
                             "token.delta", {"text": delta}
@@ -136,7 +140,7 @@ class AgentLoop:
                     completion = self.ctx.provider.complete(
                         self.ctx.model,
                         messages,
-                        tools=TOOLS_SPEC,
+                        tools=self.ctx.tools_spec or TOOLS_SPEC,
                         **generation,
                     )
             except TypeError as exc:
@@ -148,7 +152,7 @@ class AgentLoop:
                 completion = self.ctx.provider.complete(
                     self.ctx.model,
                     messages,
-                    tools=TOOLS_SPEC,
+                    tools=self.ctx.tools_spec or TOOLS_SPEC,
                     **generation,
                 )
             except ProviderError as exc:
