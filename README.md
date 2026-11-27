@@ -151,8 +151,11 @@ event sequence are in `docs/en/native-runtime.md#live-verification-2026-11-27`.
 
 Container E2E against the upstream worker image passed locally on
 2026-11-27; CI keeps it opt-in via `FREX_E2E=1` because the image is
-15 GB. Not yet: self-hosted vLLM/Ollama directly in the loop. Claims
-beyond this list should not be assumed.
+15 GB. The container workflow also built and published
+`ghcr.io/net1nfect/frex-worker-container:latest` (anonymous pull
+verified); the E2E run above used the upstream image. Not yet:
+self-hosted vLLM/Ollama directly in the loop. Claims beyond this list
+should not be assumed.
 
 ## Documentation
 
@@ -181,6 +184,10 @@ Both setup methods require the worker container image:
 ```bash
 docker pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest
 ```
+
+The container workflow also publishes an image built from this repo's
+`container/Dockerfile`: `ghcr.io/net1nfect/frex-worker-container:latest`.
+`dispatch.yaml` still defaults to the upstream image for compatibility.
  
 ### Docker Compose (recommended)
  

@@ -127,5 +127,8 @@ format tool call/result yang ditolak gateway. Review lanjutan menemukan
 `max_tokens`/`temperature` dari config tidak pernah dikirim; sudah
 diperbaiki dan diuji live lewat proyek `proj_002`. Container E2E dengan
 image worker upstream juga lulus lokal pada 2026-11-27 (`FREX_E2E=1`);
-CI tetap opt-in karena image berukuran 15 GB. Yang belum diverifikasi:
-vLLM atau Ollama self-hosted secara langsung.
+CI tetap opt-in karena image berukuran 15 GB. Workflow container juga
+membangun dan mempublikasikan
+`ghcr.io/net1nfect/frex-worker-container:latest` (pull anonim
+terverifikasi); E2E di atas memakai image upstream. Yang belum
+diverifikasi: vLLM atau Ollama self-hosted secara langsung.

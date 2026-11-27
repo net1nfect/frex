@@ -129,5 +129,7 @@ rejected by the gateway. A follow-up review found that
 `max_tokens`/`temperature` from config were never sent; that is fixed
 and was verified live via `proj_002`. Container E2E against the upstream
 worker image also passed locally on 2026-11-27 (`FREX_E2E=1`); CI stays
-opt-in because the image is 15 GB. Not yet verified: self-hosted vLLM or
-Ollama directly.
+opt-in because the image is 15 GB. The container workflow built and
+published `ghcr.io/net1nfect/frex-worker-container:latest` (anonymous
+pull verified); the E2E run used the upstream image. Not yet verified:
+self-hosted vLLM or Ollama directly.
