@@ -149,9 +149,10 @@ OpenAI-compatible gateway (9router) routed to the open-weight model
 out), and concluded fact `f001` with `run_006`. Details and the exact
 event sequence are in `docs/en/native-runtime.md#verifikasi-live-2026-11-27`.
 
-Not yet: self-hosted vLLM/Ollama directly in the loop, and container E2E
-in CI (the test is opt-in via `FREX_E2E=1`). Claims beyond this list
-should not be assumed.
+Container E2E against the upstream worker image passed locally on
+2026-11-27; CI keeps it opt-in via `FREX_E2E=1` because the image is
+15 GB. Not yet: self-hosted vLLM/Ollama directly in the loop. Claims
+beyond this list should not be assumed.
 
 ## Documentation
 

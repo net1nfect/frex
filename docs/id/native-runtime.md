@@ -95,8 +95,8 @@ loop berakhir.
 - `submit_result` wajib: loop tidak menerima jawaban akhir berupa prosa.
 - Scope checking pluggable; kebijakan operasi nyata didefinisikan di
   Fase 4.
-- Container E2E di CI masih opt-in (`FREX_E2E=1`); live run di atas
-  dijalankan manual.
+- Container E2E lulus lokal pada 2026-11-27; CI masih opt-in
+  (`FREX_E2E=1`) karena image worker berukuran 15 GB.
 
 ## Verifikasi live (2026-11-27)
 
@@ -119,6 +119,7 @@ Hasil proyek `proj_001`, intent `i001`:
 
 Live run ini menemukan dua bug yang tidak tertangkap unit test dan sudah
 diperbaiki: urutan argumen registry/project di scheduler, dan wire format
-tool call/result yang ditolak gateway. Yang belum diverifikasi: vLLM atau
-Ollama self-hosted secara langsung, dan container E2E di CI (opt-in
-`FREX_E2E=1`).
+tool call/result yang ditolak gateway. Container E2E dengan image worker
+upstream juga lulus lokal pada 2026-11-27 (`FREX_E2E=1`); CI tetap
+opt-in karena image berukuran 15 GB. Yang belum diverifikasi: vLLM atau
+Ollama self-hosted secara langsung.
