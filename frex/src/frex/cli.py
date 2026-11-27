@@ -6,11 +6,15 @@ import uvicorn
 from frex.dispatcher.logging import configure_logging
 from frex.dispatcher.scheduler.loop import DispatcherLoop
 from frex.server import db
+from frex.cli_run import register as register_operator_commands
 
 
 @click.group()
 def main():
     """Frex - Fact-graph based collaborative exploration protocol."""
+
+
+register_operator_commands(main)
 
 
 @main.command()
