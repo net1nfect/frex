@@ -104,26 +104,33 @@ class AgentLoop:
                 messages.append({"role": "user", "content": f"[steering] {hint}"})
                 self.ctx.on_event("steering.received", {"hint": hint})
 
+            # Only send generation params that are configured, so an
+            # adapter with the older signature keeps working when the
+            # caller did not set them.
+            generation: dict[str, Any] = {}
+            if self.ctx.max_tokens is not None:
+                generation["max_tokens"] = self.ctx.max_tokens
+            if self.ctx.temperature is not None:
+                generation["temperature"] = self.ctx.temperature
+
             try:
                 if self.ctx.stream_tokens:
                     completion: Completion = self.ctx.provider.complete(
                         self.ctx.model,
                         messages,
                         tools=TOOLS_SPEC,
-                        max_tokens=self.ctx.max_tokens,
-                        temperature=self.ctx.temperature,
                         stream=True,
                         on_token=lambda delta: self.ctx.on_event(
                             "token.delta", {"text": delta}
                         ),
+                        **generation,
                     )
                 else:
                     completion = self.ctx.provider.complete(
                         self.ctx.model,
                         messages,
                         tools=TOOLS_SPEC,
-                        max_tokens=self.ctx.max_tokens,
-                        temperature=self.ctx.temperature,
+                        **generation,
                     )
             except TypeError as exc:
                 # Covers adapters that predate stream=; degrade to
@@ -135,8 +142,7 @@ class AgentLoop:
                     self.ctx.model,
                     messages,
                     tools=TOOLS_SPEC,
-                    max_tokens=self.ctx.max_tokens,
-                    temperature=self.ctx.temperature,
+                    **generation,
                 )
             except ProviderError as exc:
                 self.ctx.on_event("error", {"message": str(exc)})
