@@ -140,6 +140,10 @@ class ExploreTaskConfig(BaseModel):
     # Restrict the tool surface for native explore (e.g. drop
     # nuclei_scan/screenshot on minimal containers). None/empty = all.
     tools_enabled: list[str] | None = None
+    # Risk-tier overrides for the permission gate (1=auto+logged,
+    # 2=session approval, 3=per-action approval). Tier-3 tools can
+    # never be lowered by config — see permissions.PermissionGate.
+    tool_risk_tiers: dict[str, int] | None = None
 
 
 class BootstrapTaskConfig(BaseModel):

@@ -220,6 +220,36 @@ def run_native_explore_task(
                 return "low"
             return "medium"
 
+        from frex.dispatcher.runtime.permissions import (
+            PermissionGate,
+            cli_approval_handler,
+        )
+
+        def audit_permission(entry: dict[str, Any]) -> None:
+            # Audit must never break execution: a graph write failure
+            # is logged, not raised — the decision itself already happened.
+            try:
+                record_action_log(
+                    {
+                        "description": (
+                            f"permission: {entry['decision']} tier {entry['tier']} "
+                            f"{entry['tool']} on {entry['target']} — {entry['reason']}"
+                        ),
+                        "kind": "action_log",
+                        "tool_name": entry["tool"],
+                        "target": entry["target"],
+                        "timestamp": entry["timestamp"],
+                    }
+                )
+            except Exception:
+                LOG.warning("permission audit write failed", exc_info=True)
+
+        permission_gate = PermissionGate(
+            tier_overrides=getattr(explore_config, "tool_risk_tiers", None),
+            approval_handler=cli_approval_handler,
+            audit_sink=audit_permission,
+        )
+
         context = AgentContext(
             provider=provider,
             model=model_config.model,
@@ -241,6 +271,7 @@ def run_native_explore_task(
             state_summary_interval=5,
             recent_window=6,
             effort_schedule=effort_for_step,
+            permission_gate=permission_gate,
         )
         outcome = AgentLoop(context).run(
             f"Intent: {intent.description}\n\nInvestigate and report via "

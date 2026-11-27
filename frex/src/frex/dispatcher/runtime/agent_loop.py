@@ -88,6 +88,11 @@ class AgentContext:
     # None entries omit the parameter entirely. Providers that do not
     # support reasoning_effort degrade gracefully (TypeError catch).
     effort_schedule: Callable[[int], str | None] | None = None
+    # Optional permission gate: checked BEFORE every non-exempt tool
+    # execution. ASK pauses for operator approval; DENY skips execution
+    # and feeds the refusal back to the model. Scope guard still runs
+    # first inside the executor — the gate is an additional layer.
+    permission_gate: Any | None = None
 
 
 class AgentLoop:
@@ -238,6 +243,54 @@ class AgentLoop:
                 for call in completion.tool_calls:
                     if self._cancelled():
                         return finish("cancelled")
+                    try:
+                        call_args: dict[str, Any] = json.loads(call.arguments)
+                    except ValueError:
+                        call_args = {}
+                    gate = self.ctx.permission_gate
+                    if gate is not None:
+                        decision = gate.check(
+                            call.name,
+                            str(call_args.get("url") or call_args.get("target") or call_args.get("domain") or ""),
+                            severity=call_args.get("severity"),
+                        )
+                        if decision.decision == "deny":
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": call.id,
+                                    "content": json.dumps(
+                                        {
+                                            "error": "permission_denied",
+                                            "message": f"{call.name} is tier {decision.tier}: {decision.reason}",
+                                        }
+                                    ),
+                                }
+                            )
+                            tool_calls += 1
+                            continue
+                        if decision.decision == "ask":
+                            approved, approver = gate.resolve_ask(
+                                call.name,
+                                str(call_args.get("url") or call_args.get("target") or call_args.get("domain") or ""),
+                                decision.tier,
+                                rationale=str(call_args.get("rationale") or "requested by model"),
+                            )
+                            if not approved:
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": call.id,
+                                        "content": json.dumps(
+                                            {
+                                                "error": "permission_denied",
+                                                "message": f"operator denied {call.name} on this target (approver: {approver})",
+                                            }
+                                        ),
+                                    }
+                                )
+                                tool_calls += 1
+                                continue
                     self.ctx.on_event(
                         "tool.started", {"tool": call.name, "id": call.id}
                     )

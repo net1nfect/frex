@@ -73,9 +73,13 @@ TECH_TO_NUCLEI_TAGS: dict[str, list[str]] = {
 SUBDOMAIN_CAP = 200
 FINDING_CAP = 100
 
+# Tools that change state on the target are flagged is_mutating and
+# default to NOT auto-running (permission tier >= 2). The registry is
+# the single source of truth for the gate's tier defaults.
 TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "name": "run_command",
+        "is_mutating": False,
         "description": "Run a shell command inside the project container and return its output.",
         "parameters": {
             "type": "object",
@@ -88,6 +92,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "read_file",
+        "is_mutating": False,
         "description": "Read a file inside the project container.",
         "parameters": {
             "type": "object",
@@ -97,6 +102,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "write_file",
+        "is_mutating": False,
         "description": "Write (or overwrite) a file inside the project container.",
         "parameters": {
             "type": "object",
@@ -109,6 +115,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "http_request",
+        "is_mutating": False,
         "description": "Perform an HTTP request from inside the container (not from the dispatcher).",
         "parameters": {
             "type": "object",
@@ -124,6 +131,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "submit_result",
+        "is_mutating": False,
         "description": "Finish the task with a structured JSON result. Call this when done.",
         "parameters": {
             "type": "object",
@@ -135,6 +143,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "http_probe",
+        "is_mutating": False,
         "description": (
             "Structured HTTP probe: status, selected response headers, body size "
             "and a short body preview. Cheaper and cleaner than curl in run_command. "
@@ -156,6 +165,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "port_scan",
+        "is_mutating": False,
         "description": (
             "TCP port scan via nmap from inside the container. Returns a compact "
             "list of open ports with service names. Use for targeted checks; "
@@ -176,6 +186,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "nuclei_scan",
+        "is_mutating": False,
         "description": (
             "Run nuclei templates against a target and return matching findings "
             "(id, severity, matched URL). Use a narrow severity/template filter "
@@ -196,6 +207,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "screenshot",
+        "is_mutating": False,
         "description": (
             "Capture a headless-browser screenshot of a URL into the container "
             "filesystem. Returns the saved path and file size."
@@ -217,6 +229,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "search_sploit",
+        "is_mutating": False,
         "description": (
             "Search the local exploit database (searchsploit) and return the "
             "top matching entries with their file paths."
@@ -232,6 +245,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "submit_facts",
+        "is_mutating": False,
         "description": (
             "Record findings as facts in the project graph (born verified from "
             "tool evidence). Use for concrete discoveries worth keeping; "
@@ -265,6 +279,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "subdomain_enum",
+        "is_mutating": False,
         "description": (
             "Passive subdomain enumeration (subfinder, fallback amass). Returns "
             "deduplicated subdomains already re-filtered against the operation "
@@ -286,6 +301,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "content_discovery",
+        "is_mutating": False,
         "description": (
             "Directory/path discovery (ffuf, fallback gobuster) with a small "
             "preset wordlist and a polite rate limit. Use after http_probe to "
@@ -317,6 +333,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "tech_fingerprint",
+        "is_mutating": False,
         "description": (
             "Identify the technology stack of a URL (httpx -tech-detect, fallback "
             "whatweb). Returns technologies with suggested nuclei tags — use "
@@ -333,6 +350,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "interactsh_generate",
+        "is_mutating": False,
         "description": (
             "Register an out-of-band interaction payload: returns a unique "
             "correlation id and payload URL to inject into tests (blind SSRF, "
@@ -345,6 +363,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "interactsh_poll",
+        "is_mutating": False,
         "description": (
             "Poll interactions for a correlation id from interactsh_generate. "
             "confirmed=true means the target actually reached the OOB server."
@@ -360,6 +379,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "session_authenticate",
+        "is_mutating": False,
         "description": (
             "Establish an authenticated session against a login endpoint. "
             "Returns a session_token; pass it to http_probe, content_discovery, "
@@ -394,6 +414,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "crawl_site",
+        "is_mutating": False,
         "description": (
             "Crawl a URL with katana including JavaScript endpoint extraction "
             "(-js-crawl): finds real routes and parameters of modern SPAs that "
@@ -416,6 +437,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "submit_action_log",
+        "is_mutating": False,
         "description": (
             "Record an auditable action entry (tool, target, what happened) "
             "into the project graph. Append-only: entries are never edited. "
@@ -433,6 +455,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "get_fact_detail",
+        "is_mutating": False,
         "description": (
             "Retrieve the full record of one fact by id (listed in the "
             "state summary). Use instead of re-running a tool when you "
