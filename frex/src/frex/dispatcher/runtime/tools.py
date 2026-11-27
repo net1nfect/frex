@@ -11,6 +11,7 @@ import json
 import logging
 import shlex
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -30,7 +31,46 @@ DEFAULT_TOOL_OUTPUT_BUDGETS: dict[str, int] = {
     "screenshot": 500,
     "search_sploit": 6_000,
     "submit_facts": 2_000,
+    "subdomain_enum": 6_000,
+    "content_discovery": 4_000,
+    "tech_fingerprint": 1_500,
+    "interactsh_generate": 500,
+    "interactsh_poll": 2_000,
+    "session_authenticate": 800,
+    "crawl_site": 6_000,
+    "submit_action_log": 500,
 }
+
+# Structured-wordlist presets for content_discovery. Deliberately small
+# defaults: a huge wordlist burns the operation budget for noise.
+WORDLIST_PRESETS = {
+    "common": "/usr/share/wordlists/dirb/common.txt",
+    "small": "/usr/share/wordlists/dirb/small.txt",
+    "big": "/usr/share/wordlists/dirb/big.txt",
+}
+
+# Known technologies → nuclei tags, so tech_fingerprint output narrows a
+# following nuclei_scan instead of the model scanning 5000 templates.
+TECH_TO_NUCLEI_TAGS: dict[str, list[str]] = {
+    "wordpress": ["wordpress", "wp-plugin"],
+    "joomla": ["joomla"],
+    "drupal": ["drupal"],
+    "php": ["php"],
+    "nginx": ["nginx"],
+    "apache": ["apache"],
+    "tomcat": ["tomcat"],
+    "iis": ["iis"],
+    "express": ["express"],
+    "django": ["django"],
+    "flask": ["flask"],
+    "rails": ["rails"],
+    "spring": ["spring"],
+    "gitlab": ["gitlab"],
+    "jenkins": ["jenkins"],
+}
+
+SUBDOMAIN_CAP = 200
+FINDING_CAP = 100
 
 TOOLS_SPEC: list[dict[str, Any]] = [
     {
@@ -108,6 +148,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
                 "body": {"type": "string"},
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
                 "max_body_chars": {"type": "integer", "minimum": 100, "maximum": 20000},
+                "session_token": {"type": "string", "description": "From session_authenticate — test the authenticated surface"},
             },
             "required": ["url"],
         },
@@ -145,6 +186,8 @@ TOOLS_SPEC: list[dict[str, Any]] = [
                 "target": {"type": "string"},
                 "severity": {"type": "string", "description": "e.g. critical,high"},
                 "templates": {"type": "string", "description": "nuclei template path or tag list (-t/-tags)"},
+                "tags": {"type": "string", "description": "nuclei tag filter (e.g. from tech_fingerprint suggested_nuclei_tags)"},
+                "session_token": {"type": "string", "description": "From session_authenticate — many templates need authenticated requests"},
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
             },
             "required": ["target"],
@@ -191,7 +234,9 @@ TOOLS_SPEC: list[dict[str, Any]] = [
         "description": (
             "Record findings as facts in the project graph (born verified from "
             "tool evidence). Use for concrete discoveries worth keeping; "
-            "submit_result still ends the task."
+            "submit_result still ends the task. Facts about the same service "
+            "should share a host_key (host:port) so they correlate instead of "
+            "duplicating."
         ),
         "parameters": {
             "type": "object",
@@ -205,6 +250,10 @@ TOOLS_SPEC: list[dict[str, Any]] = [
                             "description": {"type": "string"},
                             "kind": {"type": "string"},
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "host_key": {
+                                "type": "string",
+                                "description": "Correlation key 'host:port' for facts about the same service",
+                            },
                         },
                         "required": ["description"],
                     },
@@ -213,7 +262,245 @@ TOOLS_SPEC: list[dict[str, Any]] = [
             "required": ["facts"],
         },
     },
+    {
+        "name": "subdomain_enum",
+        "description": (
+            "Passive subdomain enumeration (subfinder, fallback amass). Returns "
+            "deduplicated subdomains already re-filtered against the operation "
+            "scope. Passive sources only — no brute-force by default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "Root domain to enumerate"},
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional whitelist of passive sources",
+                },
+                "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600},
+            },
+            "required": ["domain"],
+        },
+    },
+    {
+        "name": "content_discovery",
+        "description": (
+            "Directory/path discovery (ffuf, fallback gobuster) with a small "
+            "preset wordlist and a polite rate limit. Use after http_probe to "
+            "find paths a single request cannot reveal."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "wordlist": {
+                    "type": "string",
+                    "description": "Preset (common|small|big) or container path (default: common)",
+                },
+                "extensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "e.g. ['php', 'bak']",
+                },
+                "rate_limit": {"type": "integer", "minimum": 1},
+                "exclude_status": {
+                    "type": "string",
+                    "description": "Comma-separated status codes to filter (default: 404)",
+                },
+                "session_token": {"type": "string", "description": "From session_authenticate"},
+                "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 3600},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "tech_fingerprint",
+        "description": (
+            "Identify the technology stack of a URL (httpx -tech-detect, fallback "
+            "whatweb). Returns technologies with suggested nuclei tags — use "
+            "those tags to narrow a following nuclei_scan."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "session_token": {"type": "string", "description": "From session_authenticate"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "interactsh_generate",
+        "description": (
+            "Register an out-of-band interaction payload: returns a unique "
+            "correlation id and payload URL to inject into tests (blind SSRF, "
+            "blind XSS, blind RCE). Pair with interactsh_poll."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "interactsh_poll",
+        "description": (
+            "Poll interactions for a correlation id from interactsh_generate. "
+            "confirmed=true means the target actually reached the OOB server."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "correlation_id": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+            },
+            "required": ["correlation_id"],
+        },
+    },
+    {
+        "name": "session_authenticate",
+        "description": (
+            "Establish an authenticated session against a login endpoint. "
+            "Returns a session_token; pass it to http_probe, content_discovery, "
+            "nuclei_scan, tech_fingerprint or crawl_site to test the "
+            "authenticated surface instead of the anonymous one. The login "
+            "URL must be inside the operation scope."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Login endpoint (in scope)"},
+                "method": {
+                    "type": "string",
+                    "enum": ["form", "header", "cookie"],
+                    "description": (
+                        "form: POST username/password fields and keep the "
+                        "session cookies. header: static header (e.g. "
+                        "Authorization). cookie: static Cookie value."
+                    ),
+                },
+                "credentials": {
+                    "type": "object",
+                    "description": (
+                        "form: {username, password, username_field?, password_field?}. "
+                        "header: {name, value}. cookie: {value}."
+                    ),
+                },
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+            },
+            "required": ["url", "method", "credentials"],
+        },
+    },
+    {
+        "name": "crawl_site",
+        "description": (
+            "Crawl a URL with katana including JavaScript endpoint extraction "
+            "(-js-crawl): finds real routes and parameters of modern SPAs that "
+            "wordlist fuzzing cannot. Feed the results to content_discovery or "
+            "nuclei_scan."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 10},
+                "session_token": {
+                    "type": "string",
+                    "description": "From session_authenticate, to crawl the authenticated surface",
+                },
+                "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 1800},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "submit_action_log",
+        "description": (
+            "Record an auditable action entry (tool, target, what happened) "
+            "into the project graph. Append-only: entries are never edited. "
+            "Use for actions an engagement client may ask about later."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_name": {"type": "string"},
+                "target": {"type": "string"},
+                "result_summary": {"type": "string"},
+            },
+            "required": ["tool_name", "target", "result_summary"],
+        },
+    },
 ]
+
+
+class InteractshSession:
+    """Out-of-band interaction session (interactsh-client wrapper).
+
+    Stateless tools can't hold a correlation id between calls, so the
+    executor keeps sessions alive in scratch state: generate registers
+    one, poll looks it up. The default implementation shells out to
+    interactsh-client; tests inject a fake via the factory.
+    """
+
+    def __init__(self, client_path: str = "interactsh-client"):
+        import subprocess
+
+        self._proc = subprocess.Popen(
+            [client_path, "-n", "-json"],  # -n: no banner, json output
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self._buffer: dict[str, list[dict[str, Any]]] = {}
+        self._payload: tuple[str, str] | None = None
+
+    def payload(self) -> tuple[str, str]:
+        """Return (correlation_id, payload_url) for this session."""
+        import time
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            line = self._proc.stdout.readline()  # type: ignore[union-attr]
+            if not line:
+                time.sleep(0.1)
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            url = record.get("match") or record.get("payload") or ""
+            correlation_id = record.get("correlation_id") or ""
+            if url and correlation_id:
+                self._payload = (correlation_id, url)
+                return self._payload
+        raise RuntimeError("interactsh-client did not report a payload URL")
+
+    def poll(self, correlation_id: str, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Drain buffered interactions for this correlation id."""
+        import time
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            line = self._proc.stdout.readline() if self._proc.stdout else ""
+            if line:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get("correlation_id") == correlation_id:
+                    self._buffer.setdefault(correlation_id, []).append(
+                        {
+                            "protocol": record.get("protocol", "dns"),
+                            "timestamp": record.get("timestamp", ""),
+                            "remote_ip": record.get("remote-address", record.get("remote_address", "")),
+                        }
+                    )
+            else:
+                time.sleep(0.1)
+        return self._buffer.get(correlation_id, [])
+
+    def close(self):
+        self._proc.terminate()
 
 
 @dataclass(slots=True)
@@ -246,6 +533,20 @@ class ToolExecutor:
         # into the project graph. Without a sink the tool reports that
         # recording is unavailable instead of silently dropping findings.
         facts_sink: Callable[[list[dict[str, Any]]], int] | None = None,
+        # Re-filters host lists (e.g. subdomain_enum results) against the
+        # operation scope. Results from passive sources can include hosts
+        # outside the assigned scope; they must not reach later tools.
+        host_filter: Callable[[list[str]], list[str]] | None = None,
+        # Rate-limit ceiling for fuzzing tools: the model can request a
+        # rate, never exceed this.
+        max_rate_limit: int = 100,
+        # interactsh session factory; injectable for tests. None makes
+        # the interactsh tools report unavailable.
+        interactsh_factory: "Callable[[], InteractshSession] | None" = None,
+        # submit_action_log sink: receives one dict per audited action
+        # (tool_name, target, result_summary, timestamp). Defaults to
+        # routing through the facts sink as kind=action_log.
+        action_log_sink: Callable[[dict[str, Any]], int] | None = None,
     ):
         self._container_manager = container_manager
         self._container_name = container_name
@@ -258,6 +559,19 @@ class ToolExecutor:
         if tool_output_budgets:
             self._budgets.update(tool_output_budgets)
         self._facts_sink = facts_sink
+        self._host_filter = host_filter
+        self._max_rate_limit = max(1, max_rate_limit)
+        self._interactsh_factory = interactsh_factory
+        self._interactsh_sessions: dict[str, InteractshSession] = {}
+        # Authenticated sessions established by session_authenticate,
+        # keyed by session token. Scratch state for the executor's
+        # lifetime; other tools accept a token and reuse its headers.
+        self._sessions: dict[str, dict[str, Any]] = {}
+        # submit_action_log sink: append-only audit trail. Defaults to
+        # the facts sink with a forced kind when not overridden.
+        self._action_log_sink = action_log_sink or (
+            (lambda entry: facts_sink([entry]) if facts_sink else 0)
+        )
 
     def _output(self, name: str, text: str, budget: int | None = None) -> str:
         return _truncate(text, budget or self._budgets.get(name, MAX_TOOL_OUTPUT_CHARS))
@@ -468,8 +782,12 @@ class ToolExecutor:
         header_file = "/tmp/frex-probe-h"
         body_file = "/tmp/frex-probe-b"
         status_file = "/tmp/frex-probe-s"
+        session_flags, session_error = self._session_curl_flags(args.get("session_token"))
+        if session_error:
+            return ToolResult(ok=False, output={"error": "invalid_arguments", "message": session_error})
         script = (
-            f"curl -sS -D {shlex.quote(header_file)} -o {shlex.quote(body_file)} "
+            f"curl -sS -D {shlex.quote(header_file)} -o {shlex.quote(body_file)}"
+            + session_flags + " "
             f"-w '%{{http_code}} %{{size_download}}' -X {shlex.quote(method)} "
             f"--max-time {str(timeout)} "
             + " ".join(f"-H {shlex.quote(f'{k}: {v}')}" for k, v in headers.items())
@@ -592,6 +910,18 @@ class ToolExecutor:
         templates = args.get("templates")
         if isinstance(templates, str) and templates.strip():
             argv.extend(["-t", templates.strip()])
+        tags = args.get("tags")
+        if isinstance(tags, str) and tags.strip():
+            argv.extend(["-tags", tags.strip()])
+        session = (
+            self._sessions.get(str(args.get("session_token")))
+            if args.get("session_token") else None
+        )
+        if session:
+            for key, value in session["headers"].items():
+                argv.extend(["-H", f"{key}: {value}"])
+            if session.get("cookie_jar"):
+                argv.extend(["-H", f"Cookie: $(cat {session['cookie_jar']})"])
         returncode, stdout, stderr = self._exec(argv, timeout_seconds=timeout)
         if returncode == 127 or "not found" in stderr:
             return ToolResult(
@@ -725,6 +1055,586 @@ class ToolExecutor:
             )
         return ToolResult(ok=True, output={"query": query, "results": entries})
 
+    def _tool_subdomain_enum(self, args: dict[str, Any]) -> ToolResult:
+        domain = args.get("domain")
+        if not isinstance(domain, str) or not domain.strip():
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": "domain is required"}
+            )
+        domain = domain.strip().lower()
+        timeout = args.get("timeout_seconds", 30)
+        if not isinstance(timeout, int) or timeout < 5:
+            timeout = 30
+        sources = args.get("sources")
+        sources_arg: list[str] = []
+        if isinstance(sources, list) and sources:
+            sources_arg = [str(s) for s in sources if isinstance(s, str) and s.strip()]
+
+        # Primary: subfinder (passive, fast). Fallback: amass passive.
+        subfinder_argv = ["subfinder", "-d", domain, "-json", "-silent"]
+        if sources_arg:
+            subfinder_argv.extend(["-sources", ",".join(sources_arg)])
+        returncode, stdout, stderr = self._exec(subfinder_argv, timeout_seconds=timeout)
+        hosts: list[str] = []
+        binary = "subfinder"
+        if returncode == 127 or "not found" in stderr:
+            binary = "amass"
+            amass_argv = ["amass", "enum", "-passive", "-d", domain]
+            if sources_arg:
+                amass_argv.extend(["-passive-srcs", ",".join(sources_arg)])
+            returncode, stdout, stderr = self._exec(amass_argv, timeout_seconds=timeout)
+            if returncode == 127 or "not found" in stderr:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "unavailable", "message": "neither subfinder nor amass is installed in this container"},
+                )
+            if returncode != 0:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "enum_failed", "message": self._output("subdomain_enum", stderr) or f"amass exit {returncode}"},
+                )
+            hosts = [line.strip().lower() for line in stdout.splitlines() if line.strip() and "." in line]
+        else:
+            if returncode != 0:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "enum_failed", "message": self._output("subdomain_enum", stderr) or f"subfinder exit {returncode}"},
+                )
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                host = record.get("host")
+                if isinstance(host, str) and host:
+                    hosts.append(host.lower())
+
+        # Re-scope: passive sources can surface hosts outside the assigned
+        # scope (old acquisitions, related domains). Never hand those to
+        # later tools unchecked.
+        if self._host_filter is not None:
+            hosts = self._host_filter(hosts)
+        unique = sorted(set(hosts))
+        truncated = len(unique) > SUBDOMAIN_CAP
+        return ToolResult(
+            ok=True,
+            output={
+                "domain": domain,
+                "subdomains": unique[:SUBDOMAIN_CAP],
+                "count": len(unique),
+                "truncated": truncated,
+                "resolver": binary,
+            },
+        )
+
+    def _resolve_wordlist(self, wordlist: Any) -> tuple[str | None, str | None]:
+        """Return (container_path, error_message)."""
+        if not isinstance(wordlist, str) or not wordlist.strip():
+            wordlist = "common"
+        wordlist = wordlist.strip()
+        path = WORDLIST_PRESETS.get(wordlist, wordlist)
+        if not path.startswith("/"):
+            return None, f"unknown wordlist preset {wordlist!r}; presets: {', '.join(WORDLIST_PRESETS)} or an absolute container path"
+        return path, None
+
+    def _tool_content_discovery(self, args: dict[str, Any]) -> ToolResult:
+        url = args.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "url must be http(s)"},
+            )
+        if "FUZZ" not in url:
+            url = url.rstrip("/") + "/FUZZ"
+        extensions = args.get("extensions") or []
+        if not isinstance(extensions, list):
+            extensions = []
+        extensions = [str(e).lstrip(".").strip() for e in extensions if str(e).strip()]
+        exclude_status = args.get("exclude_status", "404")
+        if not isinstance(exclude_status, str) or not exclude_status.strip():
+            exclude_status = "404"
+        timeout = args.get("timeout_seconds", 600)
+        if not isinstance(timeout, int) or timeout < 10:
+            timeout = 600
+        # Rate limit: the model may request one; the config ceiling wins.
+        rate = args.get("rate_limit", 50)
+        if not isinstance(rate, int) or rate < 1:
+            rate = 50
+        rate = min(rate, self._max_rate_limit)
+
+        wordlist_path, error = self._resolve_wordlist(args.get("wordlist"))
+        if error:
+            return ToolResult(ok=False, output={"error": "invalid_arguments", "message": error})
+
+        # Pre-check the wordlist exists and count its words: an actionable
+        # error here beats an ffuf stacktrace, and the word count is the
+        # honest request total.
+        check_rc, check_out, _ = self._exec(
+            ["sh", "-c", f"test -f {shlex.quote(wordlist_path)} && wc -l < {shlex.quote(wordlist_path)}"],
+            timeout_seconds=10,
+        )
+        if check_rc != 0:
+            return ToolResult(
+                ok=False,
+                output={
+                    "error": "wordlist_missing",
+                    "message": f"wordlist not found in container: {wordlist_path} (presets: {', '.join(WORDLIST_PRESETS)})",
+                },
+            )
+        try:
+            total_requests = int(check_out.strip() or 0) * (1 + len(extensions))
+        except ValueError:
+            total_requests = 0
+
+        ffuf_argv = [
+            "ffuf", "-u", url, "-w", wordlist_path, "-json", "-s",
+            "-rate-limit", str(rate), "-t", str(min(rate, 50)),
+            "-fc", exclude_status,
+        ]
+        for ext in extensions:
+            ffuf_argv.extend(["-e", ext])
+        fuzz_session = (
+            self._sessions.get(str(args.get("session_token")))
+            if args.get("session_token") else None
+        )
+        if fuzz_session:
+            for key, value in fuzz_session["headers"].items():
+                ffuf_argv.extend(["-H", f"{key}: {value}"])
+            if fuzz_session.get("cookie_jar"):
+                ffuf_argv.extend(["-H", f"Cookie: $(cat {fuzz_session['cookie_jar']})"])
+        returncode, stdout, stderr = self._exec(ffuf_argv, timeout_seconds=timeout)
+        if returncode == 127 or "not found" in stderr:
+            # Fallback: gobuster.
+            base_url = url.replace("FUZZ", "WORD")  # gobuster has no keyword
+            gobuster_argv = [
+                "gobuster", "dir", "-u", base_url, "-w", wordlist_path,
+                "-t", str(min(rate, 50)), "-q", "--no-error",
+                "-b", exclude_status,
+            ]
+            for ext in extensions:
+                gobuster_argv.extend(["-x", ext])
+            returncode, stdout, stderr = self._exec(gobuster_argv, timeout_seconds=timeout)
+            if returncode == 127 or "not found" in stderr:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "unavailable", "message": "neither ffuf nor gobuster is installed in this container"},
+                )
+            if returncode != 0:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "fuzz_failed", "message": self._output("content_discovery", stderr) or f"gobuster exit {returncode}"},
+                )
+            found = []
+            import re as _re
+
+            for line in stdout.splitlines():
+                match = _re.match(r"(/\S*)\s*\(Status:\s*(\d+)\)\s*\[Size:\s*(\d+)\]", line.strip())
+                if match:
+                    found.append({"path": match.group(1), "status": int(match.group(2)), "length": int(match.group(3))})
+        else:
+            if returncode != 0 and not stdout.strip():
+                return ToolResult(
+                    ok=False,
+                    output={"error": "fuzz_failed", "message": self._output("content_discovery", stderr) or f"ffuf exit {returncode}"},
+                )
+            found = []
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                inputs = record.get("input") or {}
+                fuzz = inputs.get("FUZZ") or ""
+                found.append(
+                    {
+                        "path": "/" + fuzz if not fuzz.startswith("/") else fuzz,
+                        "status": record.get("status"),
+                        "length": record.get("length"),
+                    }
+                )
+        truncated = len(found) > FINDING_CAP
+        return ToolResult(
+            ok=True,
+            output={
+                "url": url,
+                "found": found[:FINDING_CAP],
+                "total_requests": total_requests,
+                "truncated": truncated,
+                "rate_limit": rate,
+                "wordlist": wordlist_path,
+            },
+        )
+
+    def _tool_tech_fingerprint(self, args: dict[str, Any]) -> ToolResult:
+        url = args.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "url must be http(s)"},
+            )
+        returncode, stdout, stderr = self._exec(
+            ["httpx", "-u", url, "-tech-detect", "-status-code", "-json", "-silent"]
+            + (
+                [
+                    ["-H", f"{k}: {v}"]
+                    for k, v in (
+                        self._sessions.get(str(args.get("session_token"))) or {}
+                    ).get("headers", {}).items()
+                ]
+                if args.get("session_token") else []
+            ),
+            timeout_seconds=90,
+        )
+        technologies: list[dict[str, Any]] = []
+        server_header: str | None = None
+        waf_hint: str | None = None
+        if returncode == 127 or "not found" in stderr:
+            # Fallback: whatweb plain output "url [200] Apache[2.4], PHP[7.4]".
+            returncode, stdout, stderr = self._exec(
+                ["whatweb", "-q", url], timeout_seconds=90
+            )
+            if returncode == 127 or "not found" in stderr:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "unavailable", "message": "neither httpx nor whatweb is installed in this container"},
+                )
+            import re as _re
+
+            for name, version in _re.findall(r"([A-Za-z0-9._-]+)(?:\[([^\]]*)\])?", stdout):
+                if not name or name == url:
+                    continue
+                clean_version = version if version and version.replace(".", "").isdigit() else None
+                technologies.append({"name": name, "version": clean_version, "category": "detected"})
+        else:
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                server_header = record.get("webserver") or server_header
+                for tech in record.get("tech") or []:
+                    technologies.append({"name": str(tech), "version": None, "category": "detected"})
+                waf_hint = record.get("waf") or waf_hint
+                if technologies:
+                    break
+
+        tags: list[str] = []
+        for tech in technologies:
+            for key, mapped in TECH_TO_NUCLEI_TAGS.items():
+                if key in tech["name"].lower():
+                    tags.extend(t for t in mapped if t not in tags)
+        return ToolResult(
+            ok=True,
+            output={
+                "url": url,
+                "technologies": technologies[:20],
+                "server_header": server_header,
+                "waf_hint": waf_hint,
+                "suggested_nuclei_tags": tags,
+            },
+        )
+
+    def _tool_interactsh_generate(self, args: dict[str, Any]) -> ToolResult:
+        del args
+        if self._interactsh_factory is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "interactsh is not configured for this deployment"},
+            )
+        try:
+            session = self._interactsh_factory()
+        except FileNotFoundError:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "interactsh-client is not installed in this container"},
+            )
+        except Exception as exc:  # registration failure
+            return ToolResult(
+                ok=False,
+                output={"error": "interactsh_failed", "message": self._output("interactsh_generate", str(exc))},
+            )
+        correlation_id, payload_url = session.payload()
+        self._interactsh_sessions[correlation_id] = session
+        return ToolResult(
+            ok=True,
+            output={"correlation_id": correlation_id, "payload_url": payload_url},
+        )
+
+    def _tool_interactsh_poll(self, args: dict[str, Any]) -> ToolResult:
+        correlation_id = args.get("correlation_id")
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": "correlation_id is required"}
+            )
+        session = self._interactsh_sessions.get(correlation_id.strip())
+        if session is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": f"unknown correlation_id {correlation_id!r} — call interactsh_generate first"},
+            )
+        timeout = args.get("timeout_seconds", 10)
+        if not isinstance(timeout, int) or timeout < 1:
+            timeout = 10
+        interactions = session.poll(correlation_id, timeout_seconds=timeout)
+        return ToolResult(
+            ok=True,
+            output={
+                "correlation_id": correlation_id,
+                "interactions": interactions,
+                "confirmed": bool(interactions),
+            },
+        )
+
+    def _apply_session(
+        self, headers: dict[str, str], session_token: Any
+    ) -> tuple[dict[str, str], str | None]:
+        """Merge an authenticated session's headers into the request.
+
+        Returns (headers, error). An unknown token is an actionable
+        error, not a silent anonymous request — the model must know the
+        authenticated surface was NOT tested.
+        """
+        if session_token is None:
+            return headers, None
+        session = self._sessions.get(str(session_token))
+        if session is None:
+            return headers, (
+                f"unknown session_token {session_token!r} — call session_authenticate first"
+            )
+        merged = dict(session["headers"])
+        merged.update(headers)
+        return merged, None
+
+    def _tool_session_authenticate(self, args: dict[str, Any]) -> ToolResult:
+        url = args.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "url must be http(s)"},
+            )
+        method = args.get("method")
+        if method not in ("form", "header", "cookie"):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "method must be form, header or cookie"},
+            )
+        credentials = args.get("credentials")
+        if not isinstance(credentials, dict):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "credentials must be an object"},
+            )
+        timeout = args.get("timeout_seconds", 30)
+        if not isinstance(timeout, int) or timeout < 1:
+            timeout = 30
+
+        token = "sess_" + uuid.uuid4().hex[:12]
+        session: dict[str, Any] = {"headers": {}, "login_url": url}
+
+        if method == "header":
+            name = credentials.get("name")
+            value = credentials.get("value")
+            if not isinstance(name, str) or not isinstance(value, str) or not name:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "invalid_arguments", "message": "header credentials need {name, value}"},
+                )
+            session["headers"][name] = value
+            self._sessions[token] = session
+            return ToolResult(
+                ok=True,
+                output={"session_token": token, "method": "header", "header": name, "login_url": url},
+            )
+
+        if method == "cookie":
+            value = credentials.get("value")
+            if not isinstance(value, str) or not value:
+                return ToolResult(
+                    ok=False,
+                    output={"error": "invalid_arguments", "message": "cookie credentials need {value}"},
+                )
+            session["headers"]["Cookie"] = value
+            self._sessions[token] = session
+            return ToolResult(
+                ok=True,
+                output={"session_token": token, "method": "cookie", "login_url": url},
+            )
+
+        # form: real login POST, keep the response cookies in a jar.
+        username = credentials.get("username")
+        password = credentials.get("password")
+        if not isinstance(username, str) or not isinstance(password, str):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "form credentials need {username, password}"},
+            )
+        user_field = credentials.get("username_field", "username")
+        pass_field = credentials.get("password_field", "password")
+        jar = f"/tmp/frex-session-{token}.txt"
+        script = (
+            f"curl -sS -c {shlex.quote(jar)} -o /dev/null -w '%{{http_code}}' "
+            f"--max-time {timeout} "
+            f"--data-urlencode {shlex.quote(f'{user_field}={username}')} "
+            f"--data-urlencode {shlex.quote(f'{pass_field}={password}')} "
+            f"{shlex.quote(url)}"
+        )
+        returncode, stdout, stderr = self._exec(["sh", "-c", script], timeout_seconds=timeout + 15)
+        status_code = 0
+        try:
+            status_code = int(stdout.strip().split()[-1])
+        except (ValueError, IndexError):
+            pass
+        if returncode != 0:
+            return ToolResult(
+                ok=False,
+                output={"error": "login_failed", "message": self._output("session_authenticate", stderr) or f"curl exit {returncode}"},
+            )
+        # Confirm the jar actually holds a session cookie; a 200 with no
+        # Set-Cookie usually means the login was rejected silently.
+        jar_rc, jar_out, _ = self._exec(
+            ["sh", "-c", f"grep -c . {shlex.quote(jar)} 2>/dev/null || echo 0"], timeout_seconds=5
+        )
+        has_cookies = jar_out.strip() not in ("", "0")
+        if not has_cookies:
+            return ToolResult(
+                ok=False,
+                output={
+                    "error": "no_session_cookie",
+                    "message": f"login returned HTTP {status_code} but no session cookie — credentials may be wrong or the form fields don't match",
+                },
+            )
+        session["headers"]["Cookie"] = f"frex-cookie-jar:{jar}"  # marker; curl re-reads the jar
+        # Store the jar path so per-tool commands can reference it with -b.
+        session["cookie_jar"] = jar
+        session["headers"].pop("Cookie")
+        self._sessions[token] = session
+        return ToolResult(
+            ok=True,
+            output={
+                "session_token": token,
+                "method": "form",
+                "login_status": status_code,
+                "login_url": url,
+                "note": "session cookies stored in container; pass session_token to other tools",
+            },
+        )
+
+    def _session_curl_flags(self, session_token: Any) -> tuple[str, str | None]:
+        """Command-line flags (cookie jar or headers) for curl-based tools."""
+        if not session_token:
+            return "", None
+        session = self._sessions.get(str(session_token))
+        if session is None:
+            return "", (
+                f"unknown session_token {session_token!r} — call session_authenticate first"
+            )
+        jar = session.get("cookie_jar")
+        if jar:
+            return f" -b {shlex.quote(jar)}", None
+        header_flags = " ".join(
+            f"-H {shlex.quote(f'{k}: {v}')}" for k, v in session["headers"].items()
+        )
+        return f" {header_flags}", None
+
+
+    def _tool_crawl_site(self, args: dict[str, Any]) -> ToolResult:
+        url = args.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return ToolResult(
+                ok=False,
+                output={"error": "invalid_arguments", "message": "url must be http(s)"},
+            )
+        depth = args.get("depth", 3)
+        if not isinstance(depth, int) or not 1 <= depth <= 10:
+            depth = 3
+        timeout = args.get("timeout_seconds", 600)
+        if not isinstance(timeout, int) or timeout < 10:
+            timeout = 600
+        session_flags, error = self._session_curl_flags(args.get("session_token"))
+        if error:
+            return ToolResult(ok=False, output={"error": "invalid_arguments", "message": error})
+        # -js-crawl extracts endpoints from JS bundles, not just <a href>.
+        argv = [
+            "katana", "-u", url, "-depth", str(depth), "-json", "-silent",
+            "-js-crawl", "-d", str(depth), "-ef", "css,png,gif,jpg,woff,woff2,svg",
+        ]
+        session = self._sessions.get(str(args.get("session_token"))) if args.get("session_token") else None
+        if session:
+            for key, value in session["headers"].items():
+                argv.extend(["-H", f"{key}: {value}"])
+            if session.get("cookie_jar"):
+                argv.extend(["-H", f"Cookie: $(cat {session['cookie_jar']})"])
+        returncode, stdout, stderr = self._exec(argv, timeout_seconds=timeout)
+        if returncode == 127 or "not found" in stderr:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "katana is not installed in this container"},
+            )
+        endpoints: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            endpoint_url = record.get("endpoint") or record.get("url") or ""
+            if not endpoint_url or endpoint_url in seen:
+                continue
+            seen.add(endpoint_url)
+            entry: dict[str, Any] = {"url": endpoint_url}
+            if record.get("method"):
+                entry["method"] = record["method"]
+            parameter = record.get("parameter") or record.get("parameter_value")
+            if parameter:
+                entry["parameter"] = parameter
+            endpoints.append(entry)
+            if len(endpoints) >= FINDING_CAP:
+                break
+        truncated = len(seen) > FINDING_CAP
+        return ToolResult(
+            ok=True,
+            output={
+                "url": url,
+                "endpoints": endpoints,
+                "count": len(endpoints),
+                "truncated": truncated,
+                "depth": depth,
+            },
+        )
+
+    def _tool_submit_action_log(self, args: dict[str, Any]) -> ToolResult:
+        tool_name = args.get("tool_name")
+        target = args.get("target")
+        result_summary = args.get("result_summary")
+        for key, value in (("tool_name", tool_name), ("target", target), ("result_summary", result_summary)):
+            if not isinstance(value, str) or not value.strip():
+                return ToolResult(
+                    ok=False,
+                    output={"error": "invalid_arguments", "message": f"{key} is required"},
+                )
+        entry = {
+            "description": f"action: {tool_name.strip()} on {target.strip()} — {result_summary.strip()}",
+            "kind": "action_log",
+            "tool_name": tool_name.strip(),
+            "target": target.strip(),
+            "result_summary": result_summary.strip(),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        posted = self._action_log_sink(entry)
+        return ToolResult(ok=True, output={"logged": posted, "kind": "action_log"})
+
     def _tool_submit_facts(self, args: dict[str, Any]) -> ToolResult:
         facts = args.get("facts")
         if not isinstance(facts, list) or not facts:
@@ -745,6 +1655,9 @@ class ToolExecutor:
             confidence = fact.get("confidence")
             if isinstance(confidence, (int, float)) and 0 <= confidence <= 1:
                 entry["confidence"] = float(confidence)
+            host_key = fact.get("host_key")
+            if isinstance(host_key, str) and ":" in host_key:
+                entry["host_key"] = host_key.strip().lower()
             validated.append(entry)
         if self._facts_sink is None:
             return ToolResult(

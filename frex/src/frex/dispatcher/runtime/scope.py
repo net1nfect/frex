@@ -145,14 +145,37 @@ class Scope:
         network targets.
         """
         def check(name: str, args: dict[str, Any]) -> str | None:
-            if name in ("http_request", "http_probe", "screenshot"):
+            if name in ("http_request", "http_probe", "screenshot",
+                        "content_discovery", "tech_fingerprint", "crawl_site"):
                 return self.check_url(args.get("url", ""))
             if name in ("port_scan", "nuclei_scan"):
                 # check_command, not check_host: scan targets may be CIDRs
                 # (10.0.0.0/24), which check_command validates as networks.
                 return self.check_command(args.get("target", ""))
+            if name == "subdomain_enum":
+                # The root domain must be in scope; results are re-filtered
+                # per-host afterwards (host_filter), because passive sources
+                # can surface hosts outside the assignment.
+                return self.check_host(args.get("domain", ""))
+            if name == "session_authenticate":
+                # Credentials may only be sent to an in-scope login
+                # endpoint — the guard runs before the handler, so an
+                # out-of-scope "try login" costs one round trip, zero
+                # credential submissions.
+                return self.check_url(args.get("url", ""))
             if name == "run_command":
                 return self.check_command(args.get("command", ""))
             return None
 
         return check
+
+    def host_filter(self):
+        """Callable that keeps only in-scope hosts from a result list.
+
+        Used by subdomain_enum: a passive source returning hosts outside
+        the operation's scope must not hand them to later tools.
+        """
+        def keep(hosts: list[str]) -> list[str]:
+            return [h for h in hosts if self.check_host(h) is None]
+
+        return keep

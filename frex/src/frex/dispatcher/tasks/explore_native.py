@@ -118,7 +118,9 @@ def run_native_explore_task(
         def record_agent_facts(facts: list[dict[str, Any]]) -> int:
             """submit_facts sink: post agent findings into the graph the
             same way ingestors do — born verified from tool evidence,
-            attached to one intent anchored on origin."""
+            attached to one intent anchored on origin. A host_key
+            correlation key travels in the fact subject so the graph can
+            group multiple observations of the same service."""
             from frex.dispatcher.ingest.base import IngestedFact, post_facts
 
             ingested = [
@@ -127,10 +129,37 @@ def run_native_explore_task(
                     kind=str(fact.get("kind", "observation")),
                     match_value=str(fact["description"]),
                     match_rule="contains",
+                    subject={"host_key": fact["host_key"]} if fact.get("host_key") else {},
                 )
                 for fact in facts
             ]
             posted, _failed = post_facts(client, project_id, ingested)
+            return posted
+
+        def make_interactsh():
+            from frex.dispatcher.runtime.tools import InteractshSession
+
+            return InteractshSession()
+
+        def record_action_log(entry: dict[str, Any]) -> int:
+            """submit_action_log sink: append-only audit entries in the
+            fact graph (kind=action_log, tool/target/timestamp in the
+            subject). Facts are immutable — audit entries are never
+            edited, only superseded, which matches write-once intent."""
+            from frex.dispatcher.ingest.base import IngestedFact, post_facts
+
+            ingested = IngestedFact(
+                description=entry["description"],
+                kind="action_log",
+                subject={
+                    "tool_name": entry["tool_name"],
+                    "target": entry["target"],
+                    "timestamp": entry["timestamp"],
+                },
+                match_value=entry["description"],
+                match_rule="contains",
+            )
+            posted, _failed = post_facts(client, project_id, [ingested])
             return posted
 
         executor = ToolExecutor(
@@ -140,6 +169,9 @@ def run_native_explore_task(
             scope_checker=scope.checker() if scope else None,
             enabled_tools=enabled_set,
             facts_sink=record_agent_facts,
+            host_filter=scope.host_filter() if scope else None,
+            interactsh_factory=make_interactsh,
+            action_log_sink=record_action_log,
         )
         tools_spec = TOOLS_SPEC
         if enabled_set is not None:
