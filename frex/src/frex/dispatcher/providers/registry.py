@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from frex.dispatcher.providers.anthropic import AnthropicProvider
 from frex.dispatcher.providers.base import Provider, ProviderError
+from frex.dispatcher.providers.gemini import GeminiProvider
 from frex.dispatcher.providers.openai_compat import OpenAICompatProvider
 
 if TYPE_CHECKING:
@@ -13,6 +15,8 @@ LOG = logging.getLogger(__name__)
 
 PROVIDER_TYPES: dict[str, type] = {
     "openai_compat": OpenAICompatProvider,
+    "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
 }
 
 
@@ -40,9 +44,8 @@ class ProviderRegistry:
             if cls is None:
                 raise ProviderError(f"unknown provider type {provider_config.type}")
             kwargs: dict[str, Any] = {"name": provider_config.name}
-            if provider_config.type == "openai_compat":
-                kwargs["base_url"] = provider_config.base_url
-                kwargs["api_key"] = provider_config.api_key
+            kwargs["base_url"] = provider_config.base_url
+            kwargs["api_key"] = provider_config.api_key
             self._providers[provider_config.name] = cls(**kwargs)
         self._health: dict[str, bool] = {}
         self.validate()

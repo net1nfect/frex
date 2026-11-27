@@ -212,7 +212,7 @@ class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    type: Literal["openai_compat"]
+    type: Literal["openai_compat", "anthropic", "gemini"]
     base_url: str = ""
     api_key: str | None = None
 
