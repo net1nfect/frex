@@ -131,6 +131,18 @@ class ReasonTaskConfig(BaseModel):
     max_intents: int = Field(gt=0, default=3)
 
 
+class EngagementConfig(BaseModel):
+    """Cost/volume caps for one engagement (not one agent loop).
+
+    The ledger is code-enforced: when a cap trips the loop stops and
+    reports what was left unexamined. None means unlimited.
+    """
+
+    max_total_tool_calls: int | None = Field(default=None, gt=0)
+    max_wall_clock_minutes: float | None = Field(default=None, gt=0)
+    max_estimated_cost_usd: float | None = Field(default=None, gt=0)
+
+
 class ExploreTaskConfig(BaseModel):
     timeout: int = Field(gt=0)
     conclude_timeout: int = Field(gt=0)
@@ -144,6 +156,8 @@ class ExploreTaskConfig(BaseModel):
     # 2=session approval, 3=per-action approval). Tier-3 tools can
     # never be lowered by config — see permissions.PermissionGate.
     tool_risk_tiers: dict[str, int] | None = None
+    # Engagement-level caps shared by the parent loop and subagents.
+    engagement: EngagementConfig | None = None
 
 
 class BootstrapTaskConfig(BaseModel):

@@ -40,6 +40,9 @@ class AgentOutcome:
     cost_usd: float = 0.0
     tool_calls: int = 0
     wall_ms: int = 0
+    # Engagement cursor at finish: counters, remaining caps and stop
+    # reason. The operator sees what was left unspent when a cap trips.
+    engagement: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -93,6 +96,13 @@ class AgentContext:
     # and feeds the refusal back to the model. Scope guard still runs
     # first inside the executor — the gate is an additional layer.
     permission_gate: Any | None = None
+    # Engagement ledger shared across the parent loop and subagents.
+    # Checked before every step and charged after every tool call and
+    # completion. None means no engagement cap.
+    engagement: Any | None = None
+    # Returns a human-readable summary of unexamined scope (e.g.
+    # "hosts left: db.lab.test, api.lab.test") for the exhaustion report.
+    scope_reporter: Callable[[], str] | None = None
 
 
 class AgentLoop:
@@ -122,6 +132,8 @@ class AgentLoop:
             outcome.tokens_out = tokens_out
             outcome.cost_usd = cost
             outcome.tool_calls = tool_calls
+            if self.ctx.engagement is not None:
+                outcome.engagement = self.ctx.engagement.snapshot()
             self.ctx.on_event("task.finished", {"status": status})
             return outcome
 
@@ -132,6 +144,14 @@ class AgentLoop:
             step_count = step + 1
             if self._cancelled():
                 return finish("cancelled")
+            # Engagement cap: the ledger decides, before the model is
+            # even asked. A tripped cap stops the loop and reports what
+            # is left, with no model input.
+            if self.ctx.engagement is not None:
+                reason = self.ctx.engagement.stop_reason()
+                if reason is not None:
+                    self._report_engagement(reason)
+                    return finish("budget_exhausted", error=f"engagement {reason}")
             if cost >= self.ctx.budget.max_usd:
                 return finish("budget_exhausted", error="cost budget reached")
             if tokens_in + tokens_out >= self.ctx.budget.max_tokens:
@@ -213,9 +233,12 @@ class AgentLoop:
 
             tokens_in += completion.usage.tokens_in
             tokens_out += completion.usage.tokens_out
-            cost += self.ctx.cost_estimator(
+            step_cost = self.ctx.cost_estimator(
                 completion.usage.tokens_in, completion.usage.tokens_out
             )
+            cost += step_cost
+            if self.ctx.engagement is not None:
+                self.ctx.engagement.record_cost(step_cost)
 
             if completion.tool_calls:
                 # OpenAI wire format: assistant tool calls are
@@ -299,6 +322,8 @@ class AgentLoop:
                         call.name, call.arguments
                     )
                     tool_calls += 1
+                    if self.ctx.engagement is not None:
+                        self.ctx.engagement.record_tool_call()
                     self.ctx.on_event("tool.output", {"tool": call.name, "ok": result.ok})
                     if result.output.get("error") == "scope":
                         # Rejected actions are part of the audit trail:
@@ -339,6 +364,18 @@ class AgentLoop:
                 return finish("failed", error="model returned empty response")
 
         return finish("budget_exhausted", error="max_steps reached")
+
+    def _report_engagement(self, reason: str) -> None:
+        data: dict[str, Any] = {
+            "reason": reason,
+            "remaining": self.ctx.engagement.snapshot().get("remaining", {}),
+        }
+        if self.ctx.scope_reporter is not None:
+            try:
+                data["unexamined_scope"] = self.ctx.scope_reporter()
+            except Exception:
+                data["unexamined_scope"] = "unavailable"
+        self.ctx.on_event("engagement.exhausted", data)
 
     def _window_messages(self, messages: list[dict[str, Any]]) -> None:
         """Collapse older raw tool outputs to one-line summaries.

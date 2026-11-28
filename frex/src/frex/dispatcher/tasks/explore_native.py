@@ -110,6 +110,23 @@ def run_native_explore_task(
         budget = AgentBudget(
             max_wall_seconds=explore_config.timeout,
         )
+        # Engagement budget spans the parent loop and any subagents.
+        # Enforced by the ledger, never by model judgement.
+        from frex.dispatcher.runtime.engagement import (
+            EngagementBudget,
+            EngagementLedger,
+        )
+
+        engagement_config = getattr(explore_config, "engagement", None)
+        engagement = None
+        if engagement_config is not None:
+            engagement = EngagementLedger(
+                EngagementBudget(
+                    max_total_tool_calls=engagement_config.max_total_tool_calls,
+                    max_wall_clock_minutes=engagement_config.max_wall_clock_minutes,
+                    max_estimated_cost_usd=engagement_config.max_estimated_cost_usd,
+                )
+            )
         # Scope guard: out-of-scope calls are rejected back to the model,
         # not executed. No scope configured means unrestricted.
         scope = Scope.from_config(getattr(project.project, "scope", None))
@@ -227,6 +244,24 @@ def run_native_explore_task(
             except Exception:
                 return "state summary unavailable"
 
+        def unexamined_scope() -> str:
+            """Best-effort report of scoped hosts with no fact yet. Used
+            only when a cap trips, so failure here must never mask the
+            stop itself."""
+            if scope is None or not scope.domains:
+                return "scope unrestricted" if scope is None else "no domains listed"
+            try:
+                detail = client.get_project(project_id)
+                seen = " ".join(
+                    f"{fact.description} {fact.subject}" for fact in detail.facts
+                ).lower()
+            except Exception:
+                return f"{len(scope.domains)} scoped host(s), coverage unknown"
+            missing = [d for d in scope.domains if d not in seen]
+            if not missing:
+                return "all scoped hosts have observations"
+            return "unexamined: " + ", ".join(missing)
+
         def effort_for_step(step: int) -> str | None:
             # Deterministic routing (first probe picks) is low; triage
             # and severity reasoning get medium. Severity assessment on
@@ -290,6 +325,8 @@ def run_native_explore_task(
             recent_window=6,
             effort_schedule=effort_for_step,
             permission_gate=permission_gate,
+            engagement=engagement,
+            scope_reporter=unexamined_scope,
         )
         outcome = AgentLoop(context).run(
             f"Intent: {intent.description}\n\nInvestigate and report via "
@@ -320,6 +357,14 @@ def run_native_explore_task(
             best_effort_release(client, project_id, intent.id, worker.name)
             return "cancelled"
         if outcome.status != "completed" or outcome.result is None:
+            if outcome.engagement is not None:
+                LOG.warning(
+                    "engagement stopped project=%s intent=%s reason=%s remaining=%s",
+                    project_id,
+                    intent.id,
+                    outcome.engagement.get("stop_reason"),
+                    outcome.engagement.get("remaining"),
+                )
             LOG.warning(
                 "native explore failed project=%s intent=%s status=%s error=%s",
                 project_id,
