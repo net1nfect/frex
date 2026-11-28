@@ -146,7 +146,8 @@ class Scope:
         """
         def check(name: str, args: dict[str, Any]) -> str | None:
             if name in ("http_request", "http_probe", "screenshot",
-                        "content_discovery", "tech_fingerprint", "crawl_site"):
+                        "content_discovery", "tech_fingerprint", "crawl_site",
+                        "browser_session"):
                 return self.check_url(args.get("url", ""))
             if name in ("port_scan", "nuclei_scan"):
                 # check_command, not check_host: scan targets may be CIDRs

@@ -180,6 +180,8 @@ def run_native_explore_task(
             executor=None,  # replaced below; runner needs the executor
             gate=None,  # wired to the gate right after it is built
         )
+        from frex.dispatcher.runtime.browser import BrowserSessionManager
+
         executor = ToolExecutor(
             container_manager,
             container_name,
@@ -192,6 +194,7 @@ def run_native_explore_task(
             action_log_sink=record_action_log,
             facts_lookup=fact_lookup,
             skill_runner=skill_runner,
+            browser_manager=BrowserSessionManager(),
         )
         skill_runner._executor = executor
         tools_spec = TOOLS_SPEC

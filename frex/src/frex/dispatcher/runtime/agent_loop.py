@@ -253,6 +253,7 @@ class AgentLoop:
                             call.name,
                             str(call_args.get("url") or call_args.get("target") or call_args.get("domain") or ""),
                             severity=call_args.get("severity"),
+                            action=call_args.get("action"),
                         )
                         if decision.decision == "deny":
                             messages.append(

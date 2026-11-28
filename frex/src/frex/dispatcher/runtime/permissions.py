@@ -124,7 +124,14 @@ class PermissionGate:
             return 0
         return self._tiers.get(tool_name, 3)
 
-    def check(self, tool_name: str, target: str, *, severity: str | None = None) -> GateDecision:
+    def check(
+        self,
+        tool_name: str,
+        target: str,
+        *,
+        severity: str | None = None,
+        action: str | None = None,
+    ) -> GateDecision:
         if tool_name in GATE_EXEMPT:
             return GateDecision(ALLOW, 0, "internal bookkeeping tool")
         tier = self.tier_for(tool_name)
@@ -134,6 +141,11 @@ class PermissionGate:
             tier = 1
             if severity and any(s in severity.lower() for s in ("high", "critical")):
                 tier = 2
+        # browser_session is a composite tool: click/fill mutate page
+        # state (tier 2, is_mutating semantics); the rest are read-only.
+        # Scope is re-checked per URL by the executor regardless.
+        if tool_name == "browser_session":
+            tier = 2 if action in ("click", "fill") else 0
 
         if tier <= 1:
             decision = GateDecision(ALLOW, tier, "read-only / rate-limited auto-run")

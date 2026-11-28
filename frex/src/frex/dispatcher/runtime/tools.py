@@ -40,6 +40,7 @@ DEFAULT_TOOL_OUTPUT_BUDGETS: dict[str, int] = {
     "crawl_site": 6_000,
     "submit_action_log": 500,
     "get_fact_detail": 2_000,
+    "browser_session": 4_000,
 }
 
 # Structured-wordlist presets for content_discovery. Deliberately small
@@ -589,6 +590,8 @@ class ToolExecutor:
         facts_lookup: Callable[[str], dict[str, Any] | None] | None = None,
         # Skill runner for the run_skill meta tool. None -> unavailable.
         skill_runner: Any | None = None,
+        # Browser session manager for browser_session. None -> unavailable.
+        browser_manager: Any | None = None,
     ):
         self._container_manager = container_manager
         self._container_name = container_name
@@ -613,6 +616,7 @@ class ToolExecutor:
         # the tool report unavailability.
         self._facts_lookup = facts_lookup
         self._skill_runner = skill_runner
+        self._browser_manager = browser_manager
         self._action_log_sink = action_log_sink or (
             (lambda entry: facts_sink([entry]) if facts_sink else 0)
         )
@@ -1686,6 +1690,132 @@ class ToolExecutor:
                 "last_output": run_result.last_output,
             },
         )
+
+    def _browser_scope_error(self, url: str) -> str | None:
+        """Re-check the scope guard on every browser URL — not just once
+        at open_session. A session must not drift out of scope mid-flow."""
+        if self._scope_checker is None:
+            return None
+        return self._scope_checker("browser_session", {"url": url})
+
+    def _tool_browser_session(self, args: dict[str, Any]) -> ToolResult:
+        from frex.dispatcher.runtime.browser import SessionNotFound
+
+        if self._browser_manager is None:
+            return ToolResult(
+                ok=False,
+                output={"error": "unavailable", "message": "browser automation is not configured for this deployment"},
+            )
+        action = args.get("action")
+        if not isinstance(action, str):
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": "action is required"}
+            )
+        state_id = args.get("state_id")
+
+        def not_found(exc: Exception) -> ToolResult:
+            return ToolResult(
+                ok=False,
+                output={"error": "session_not_found", "message": self._output("browser_session", str(exc))},
+            )
+
+        try:
+            if action == "open_session":
+                url = args.get("url")
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "url must be http(s)"}
+                    )
+                rejection = self._browser_scope_error(url)
+                if rejection:
+                    return ToolResult(ok=False, output={"error": "scope", "message": rejection})
+                session = self._browser_manager.open(url)
+                return ToolResult(
+                    ok=True,
+                    output={"state_id": session.state_id, "url": session.url},
+                )
+
+            if action == "navigate":
+                url = args.get("url")
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "url must be http(s)"}
+                    )
+                # SPEC: scope is re-checked here, not only at open_session.
+                rejection = self._browser_scope_error(url)
+                if rejection:
+                    return ToolResult(ok=False, output={"error": "scope", "message": rejection})
+                result = self._browser_manager.navigate(state_id, url)
+                return ToolResult(ok=True, output={"state_id": state_id, **result})
+
+            if action == "extract":
+                mode = args.get("mode", "text")
+                if mode not in ("text", "links", "dom"):
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "mode must be text, links or dom"}
+                    )
+                content = self._browser_manager.extract(state_id, mode)
+                if isinstance(content, list):
+                    joined = json.dumps(content)
+                    truncated = len(joined) > self._budgets["browser_session"]
+                    return ToolResult(
+                        ok=True,
+                        output={"mode": mode, "items": content[:200], "count": len(content), "truncated": truncated},
+                    )
+                text = str(content)
+                budget = self._budgets["browser_session"]
+                truncated = len(text) > budget
+                return ToolResult(
+                    ok=True,
+                    output={"mode": mode, "text": text[:budget], "truncated": truncated},
+                )
+
+            if action == "screenshot":
+                path = args.get("output_path") or f"/tmp/frex-browser-{int(time.time())}.png"
+                if not isinstance(path, str) or not path.startswith("/tmp/"):
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "output_path must be under /tmp/"}
+                    )
+                result = self._browser_manager.screenshot(state_id, path)
+                return ToolResult(ok=True, output={"state_id": state_id, **result})
+
+            if action == "click":
+                selector = args.get("selector")
+                if not isinstance(selector, str) or not selector.strip():
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "selector is required"}
+                    )
+                result = self._browser_manager.click(state_id, selector)
+                return ToolResult(ok=True, output={"state_id": state_id, **result})
+
+            if action == "fill":
+                selector = args.get("selector")
+                value = args.get("value")
+                if not isinstance(selector, str) or not selector.strip():
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "selector is required"}
+                    )
+                if not isinstance(value, str):
+                    return ToolResult(
+                        ok=False, output={"error": "invalid_arguments", "message": "value must be a string"}
+                    )
+                result = self._browser_manager.fill(state_id, selector, value)
+                return ToolResult(ok=True, output={"state_id": state_id, **result})
+
+            if action == "close_session":
+                self._browser_manager.close(state_id)
+                return ToolResult(ok=True, output={"state_id": state_id, "closed": True})
+
+            return ToolResult(
+                ok=False, output={"error": "invalid_arguments", "message": f"unknown action {action!r}"}
+            )
+        except SessionNotFound as exc:
+            return not_found(exc)
+        except Exception as exc:  # backend/browser failure
+            return ToolResult(
+                ok=False,
+                output={"error": "browser_error", "message": self._output("browser_session", str(exc))},
+            )
 
     def _tool_get_fact_detail(self, args: dict[str, Any]) -> ToolResult:
         fact_id = args.get("fact_id")
